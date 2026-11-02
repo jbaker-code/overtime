@@ -1,0 +1,37 @@
+{
+  "name": "overtime",
+  "productName": "Overtime",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A tiny always-on-top desktop widget that shows the current time and how long you've been recording — because the '10-minute' screencast always runs long. Born on the BakerCode YouTube series.",
+  "author": "Claude (Anthropic)",
+  "contributors": [
+    "Jason Baker <jason@bakercode.org> (ideas guy / direction)"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/jbaker-code/overtime#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jbaker-code/overtime.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jbaker-code/overtime/issues"
+  },
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "playwright test",
+    "build": "node scripts/build-all.js",
+    "build:mac": "node scripts/build-mac.js",
+    "build:win": "node scripts/build-win.js",
+    "build:single": "node scripts/build-single-file.js",
+    "build:source": "node scripts/build-source-zip.js",
+    "clean": "node scripts/clean.js"
+  },
+  "devDependencies": {
+    "electron": "^34.0.0",
+    "electron-builder": "^25.1.8",
+    "playwright": "^1.64.1",
+    "@playwright/test": "^1.64.1"
+  }
+}

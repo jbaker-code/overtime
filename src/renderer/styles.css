@@ -1,0 +1,704 @@
+/* src/renderer/styles.css
+ * ---------------------------------------------------------------------------
+ * The whole look: a translucent pill with big tabular numerals that scale with
+ * the window (vmin units + the aspect lock in main.js mean the content always
+ * fills the frame). On hover the whole pill goes 50% black (a grab/drag target);
+ * everything's see-through at the corners so the rounded-pill shape reads over any
+ * screen content.
+ *
+ * v2: the pill color, text color, typeface and ARRANGEMENT are all settings.
+ * They arrive as CSS custom properties (--bg-rgb, --pill-opacity, --text-color,
+ * --font) and the [data-layout] attribute, all set by settings-apply.js. The
+ * tabbed settings panel (bottom of this file) overlays the pill on demand.
+ * ------------------------------------------------------------------------- */
+
+:root {
+  /* Overwritten at runtime by applySettings(); these are the defaults = the
+   * original look (black pill, white numerals, system font, stacked layout). */
+  --bg-rgb: 0, 0, 0;
+  --pill-opacity: 1;
+  --text-color: #ffffff;
+  /* Text is painted as rgba(var(--text-rgb), var(--text-opacity)) so the text color
+   * can carry its own alpha (the Colors tab's text-opacity slider), independent of
+   * the pill background's --pill-opacity. Defaults = white, fully opaque. */
+  --text-rgb: 255, 255, 255;
+  --text-opacity: 1;
+  --font: -apple-system, "SF Pro Display", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+
+  /* Per-layout readout sizes, as em multiples of #face's fixed base font-size
+   * (the 'stack' defaults). app.js scales the whole face to fill the pill, so
+   * these are window-INDEPENDENT ratios, not absolute sizes. */
+  --clock-size: 3em;
+  --merid-size: 1em;
+  --sw-size: 2em;
+  --face-gap: 0em;
+}
+
+/* Transparent everywhere so the OS window's see-through corners show. */
+html, body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+/* The pill itself. inset:0 fills the frameless window; the rounded, tinted,
+ * translucent background is the only visible surface when idle. */
+#app {
+  position: fixed;
+  inset: 0;
+  border-radius: 6vmin;
+  background: rgba(var(--bg-rgb), var(--pill-opacity));
+  /* Text carries its own alpha (--text-opacity); the var fallback keeps it opaque if
+   * the var is ever unset, so text never silently vanishes. */
+  color: rgba(var(--text-rgb), var(--text-opacity, 1));
+  font-family: var(--font);
+  font-variant-numeric: tabular-nums; /* digits don't jiggle as they change */
+  /* Belt-and-suspenders on the figures: font-variant-numeric is the modern
+   * request, this is the low-level one. Firms up every font that actually
+   * supports tabular+lining figures (won't save Georgia/serif — those genuinely
+   * lack tabular figures, which app.js detects and re-fits around). */
+  font-feature-settings: "tnum" 1, "lnum" 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  box-sizing: border-box;
+  overflow: hidden;
+  /* Grab ANY empty area of the pill to move the window. Every interactive
+   * child (the grip, the settings-panel controls) sets no-drag so clicks land. */
+  -webkit-app-region: drag;
+  /* NOTE: the pill background is deliberately NOT animated. applySettings() sets the pill
+   * background AFTER first paint, so animating it made the pill FLASH from
+   * default-black to the configured color on every launch and on every settings
+   * change. The hover tint is now a separate, animated OVERLAY (#app::after, below),
+   * so the configured background itself can change instantly, with no flash. */
+}
+
+/* ---- hover: a 50%-black overlay tints the whole pill -------------------- */
+/* The on-pill control icons are gone, so hover no longer reveals a strip. Instead a
+ * non-interactive overlay paints the ENTIRE pill 50% black while hovered — a visible
+ * grab/drag target even over a fully transparent configured background. It's a
+ * pseudo-element rather than a `background` override so that ONLY the overlay's opacity
+ * animates (the configured background never transitions -> no startup/settings flash).
+ *
+ * Stacking: #app is a positioned element (fixed) = its own stacking context. The
+ * overlay uses z-index:-1 so it paints ABOVE #app's own background (painted first) but
+ * BELOW the in-flow readouts (#face), the grip and the settings panel — the tint dims
+ * the pill surface, never the clock text. pointer-events:none keeps the pill draggable. */
+#app::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transition: opacity 150ms ease;
+  pointer-events: none;
+  z-index: -1;
+}
+#app[data-hover="true"]::after { opacity: 1; }
+
+/* ---- the draggable face + readouts ------------------------------------- */
+
+/* The face is the drag handle for the frameless window. Every interactive
+ * child (buttons, grip, panel) opts back out with no-drag. */
+.arrange {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#face {
+  -webkit-app-region: drag;
+  flex-direction: column;
+  gap: var(--face-gap);
+  line-height: 1;
+  /* Fixed "design" base size (the layout sizes below are em multiples of this).
+   * app.js measures the face's natural box at THIS size and fills the pill (minus
+   * padding) with a hybrid scheme: transform: scale() for instant feedback while
+   * the window is being resized, then it "settles" by baking the scale into a real
+   * font-size (and dropping the transform) so the glyphs re-rasterize crisply at
+   * their true pixel size. We deliberately no longer size in vmin — vmin collapses
+   * to the SMALLER dimension, which is what made the clock tiny in a short-wide
+   * window. Keep this value in sync with BASE_FONT in app.js. No transition on
+   * transform/font-size (they're set per resize and would otherwise animate/jank). */
+  font-size: 100px;
+  transform-origin: center center;
+  will-change: transform;
+  /* Grayscale AA reads better than subpixel on a transparent/translucent pill
+   * (no opaque backdrop to subpixel-blend against), and keeps the settled text
+   * clean at small sizes. */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#clock { display: flex; align-items: baseline; justify-content: center; }
+#clock-time { font-size: var(--clock-size); line-height: 1; font-weight: 600; }
+#clock-meridiem { font-size: var(--merid-size); margin-left: 0.3em; opacity: 0.8; font-weight: 600; }
+#clock-meridiem:empty { display: none; } /* 24-hour mode -> collapse it */
+#stopwatch { font-size: var(--sw-size); line-height: 1.1; opacity: 0.9; }
+
+/* The separator ("·" or "–") only appears for the layouts that ask for it. */
+#separator { display: none; opacity: 0.5; font-weight: 600; line-height: 1; }
+
+/* ---- LAYOUTS (10) — driven by #app[data-layout] ------------------------ */
+
+/* stack — the default: clock over stopwatch (handled by the base rules). */
+
+/* stopwatch-top — stopwatch above the clock. */
+#app[data-layout="stopwatch-top"] #stopwatch { order: -1; }
+
+/* clock-left — clock · stopwatch, horizontal with a dot + real spacing. */
+#app[data-layout="clock-left"] #face { flex-direction: row; gap: 0.3em; }
+#app[data-layout="clock-left"] { --clock-size: 2.2em; --merid-size: 0.8em; --sw-size: 1.5em; }
+#app[data-layout="clock-left"] #separator { display: inline-block; font-size: 1.6em; }
+#app[data-layout="clock-left"] #separator::before { content: "\00B7"; } /* middle dot */
+
+/* side-by-side — horizontal, no separator. */
+#app[data-layout="side-by-side"] #face { flex-direction: row; gap: 0.7em; }
+#app[data-layout="side-by-side"] { --clock-size: 2.2em; --merid-size: 0.8em; --sw-size: 1.5em; }
+
+/* split — clock big on the left, stopwatch small on the right, extra gap. */
+#app[data-layout="split"] #face { flex-direction: row; gap: 1em; }
+#app[data-layout="split"] { --clock-size: 2.6em; --merid-size: 0.8em; --sw-size: 1.3em; }
+
+/* one-line — a single compact inline row, both readouts small. A roomier gap
+   (~a non-breaking space) so the clock and stopwatch don't crowd each other. */
+#app[data-layout="one-line"] #face { flex-direction: row; gap: 0.6em; align-items: baseline; }
+#app[data-layout="one-line"] { --clock-size: 1.6em; --merid-size: 0.6em; --sw-size: 1.3em; }
+
+/* dash — vertical, with a dash between the two readouts. */
+#app[data-layout="dash"] { --face-gap: 0.1em; }
+#app[data-layout="dash"] #separator { display: block; font-size: 1em; }
+#app[data-layout="dash"] #separator::before { content: "\2013"; } /* en dash */
+
+/* clock-hero — oversized clock, small stopwatch beneath. */
+#app[data-layout="clock-hero"] { --clock-size: 4em; --merid-size: 1.2em; --sw-size: 1.3em; }
+
+/* stopwatch-hero — oversized stopwatch on top, small clock beneath. */
+#app[data-layout="stopwatch-hero"] #stopwatch { order: -1; }
+#app[data-layout="stopwatch-hero"] { --clock-size: 1.5em; --merid-size: 0.6em; --sw-size: 3em; }
+
+/* centered-gap — stacked, but with extra breathing room between. */
+#app[data-layout="centered-gap"] { --face-gap: 0.6em; }
+
+/* ---- the resize grip ---------------------------------------------------- */
+
+#grip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 8vmin;
+  height: 8vmin;
+  cursor: nwse-resize;
+  -webkit-app-region: no-drag;
+  opacity: 0;
+  transition: opacity 150ms ease;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0,
+    transparent 1.2vmin,
+    rgba(255, 255, 255, 0.5) 1.2vmin,
+    rgba(255, 255, 255, 0.5) 1.6vmin
+  );
+  -webkit-mask-image: linear-gradient(-45deg, #000 0 55%, transparent 55%);
+  mask-image: linear-gradient(-45deg, #000 0 55%, transparent 55%);
+  border-bottom-right-radius: 6vmin;
+}
+
+#app[data-hover="true"] #grip { opacity: 1; }
+#app[data-env="browser"] #grip { display: none; } /* meaningless in a tab */
+#app[data-theme="light"] #grip {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0,
+    transparent 1.2vmin,
+    rgba(0, 0, 0, 0.45) 1.2vmin,
+    rgba(0, 0, 0, 0.45) 1.6vmin
+  );
+}
+
+/* ---- on-pill controls — BROWSER MODE ONLY ------------------------------ */
+/* Pass C stripped the on-pill controls because the Electron build moved all control to the
+ * tray + native right-click menu — correct for Electron, but it left the browser/single-file
+ * build (a plain tab, no tray, no native menu) with no way to play/pause/reset or open
+ * settings. So these come back for BROWSER MODE ONLY.
+ *
+ * Gating is POSITIVE — the cluster shows ONLY when data-env is exactly "browser":
+ *   * the base rule below hides the cluster as the SAFE DEFAULT, and
+ *   * only `#app[data-env="browser"]` opts back in.
+ * This is deliberately NOT `:not([data-env="electron"])`: a negative gate reveals the cluster
+ * for ANY non-"electron" value — including an absent or garbage data-env — which would risk
+ * on-pill controls leaking into the Electron build if the attribute were ever unset before
+ * app.js ran. With the positive gate, anything that isn't literally "browser" (electron,
+ * missing, typo'd) stays hidden and the tray/right-click menu remains Electron's sole control
+ * path (the grip is the only on-pill affordance there). There is no Quit button — you can't
+ * quit a web page. (The grip uses the same positive #app[data-env="browser"] shape, below.)
+ *
+ * Reveal + z-order: like the grip, the cluster fades in on hover (opacity off
+ * #app[data-hover]). It is absolutely positioned at z-index:1 — ABOVE the #app::after hover
+ * tint (z-index:-1) and above the in-flow readouts (#face, z-index auto) — so the buttons stay
+ * readable against the 50%-black scrim the tint conveniently provides behind them.
+ *
+ * Size: the cluster is kept COMPACT (small buttons, a thin bar) and px-capped via clamp(), so
+ * the bottom bar doesn't grow with the window and stops geometrically covering the lower
+ * readout (#clock/#stopwatch) on hover — the ~26%-of-the-stopwatch overlap the old 11vmin
+ * bar caused in stacked layouts. (The readouts fill the pill via app.js's fit, so a thin bar
+ * clears them at normal browser-window proportions; a horizontal layout clears at any size.) */
+#controls {
+  display: none; /* SAFE DEFAULT: hidden unless a #app[data-env="browser"] opts in (below) */
+}
+#app[data-env="browser"] #controls {
+  display: flex;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  justify-content: center;
+  align-items: center;
+  gap: clamp(6px, 2.5vmin, 14px);
+  padding: clamp(3px, 1vmin, 8px) 0;
+  z-index: 1;                 /* above the tint (::after, -1) and the in-flow face */
+  opacity: 0;                 /* hidden until hover, matching the grip's reveal */
+  transition: opacity 150ms ease;
+  -webkit-app-region: no-drag; /* harmless in a tab; keeps the pattern consistent */
+}
+#app[data-env="browser"][data-hover="true"] #controls { opacity: 1; }
+
+#controls button {
+  -webkit-app-region: no-drag;
+  border: none;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+  /* Compact + px-capped so the bar stays thin in a large browser window (the old 11vmin bar
+   * scaled WITH the window and re-covered the readout at every size). Dropped to 6vmin and
+   * capped at 34px; the 14px floor keeps the tiny-widget size no taller than the old bar.
+   * clamp(min, vmin, max). */
+  width: clamp(14px, 6vmin, 34px);
+  height: clamp(14px, 6vmin, 34px);
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: clamp(9px, 3.4vmin, 18px);
+  line-height: 1;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+#controls button:hover { background: rgba(255, 255, 255, 0.3); }
+/* A disabled command (per sw.canPlay/canPause/canReset) dims + goes inert. */
+#controls button:disabled { opacity: 0.35; cursor: default; }
+/* Light pill -> dark chips so the glyphs stay legible on a pale background. */
+#app[data-theme="light"] #controls button { background: rgba(0, 0, 0, 0.14); color: #000; }
+#app[data-theme="light"] #controls button:hover { background: rgba(0, 0, 0, 0.26); }
+
+/* =========================================================================
+ * SETTINGS PANEL (v2) — built by settings-panel.js, overlays the pill.
+ * Its own opaque dark surface so options stay readable whatever the pill
+ * color is. Sizes use clamp(px, vmin, px) so it scales with the window but
+ * never gets unusably tiny or silly-huge.
+ * ===================================================================== */
+
+#settings-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: none; /* shown when #app[data-settings="open"] */
+  flex-direction: column;
+  background: rgba(18, 18, 22, 0.98);
+  color: #f2f2f4;
+  border-radius: 6vmin;
+  overflow: hidden;
+  -webkit-app-region: no-drag;
+  font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  font-variant-numeric: normal;
+}
+
+#app[data-settings="open"] #settings-panel { display: flex; }
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: clamp(6px, 2.5vmin, 14px) clamp(8px, 3vmin, 18px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  flex: 0 0 auto;
+  /* The title bar is a drag handle for the window (× stays no-drag below). */
+  -webkit-app-region: drag;
+}
+.settings-title {
+  font-size: clamp(11px, 3.4vmin, 17px); font-weight: 600; letter-spacing: 0.02em;
+  /* Nudge off the window's rounded top-left corner (#11): ~10px right, ~3px down. */
+  margin: 3px 0 0 10px;
+}
+.settings-close {
+  -webkit-app-region: no-drag;
+  border: none; background: rgba(255, 255, 255, 0.12); color: inherit;
+  width: clamp(20px, 6vmin, 30px); height: clamp(20px, 6vmin, 30px);
+  border-radius: 50%; cursor: pointer; font-size: clamp(12px, 3.6vmin, 18px);
+  line-height: 1; display: inline-flex; align-items: center; justify-content: center;
+}
+.settings-close:hover { background: rgba(255, 255, 255, 0.24); }
+
+/* tabs */
+.settings-tabs {
+  display: flex; gap: 2px; flex: 0 0 auto;
+  padding: clamp(4px, 1.5vmin, 8px) clamp(6px, 2.5vmin, 14px) 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+.tab {
+  -webkit-app-region: no-drag;
+  flex: 1 1 0; border: none; background: transparent; color: #b9b9c2;
+  padding: clamp(5px, 1.8vmin, 10px) 4px; cursor: pointer;
+  font-size: clamp(10px, 3vmin, 15px); font-weight: 600;
+  border-bottom: 2px solid transparent; border-radius: 4px 4px 0 0;
+}
+.tab:hover { color: #e8e8ee; background: rgba(255, 255, 255, 0.05); }
+.tab.is-active, .tab[aria-selected="true"] { color: #fff; border-bottom-color: #6cc0ff; }
+
+/* scrollable body */
+.settings-body { flex: 1 1 auto; overflow: auto; padding: clamp(8px, 3vmin, 16px); }
+.tab-panel { display: none; }
+.tab-panel.is-active { display: block; }
+
+.settings-section {
+  margin: clamp(4px, 1.5vmin, 10px) 0 clamp(4px, 1.2vmin, 8px);
+  font-size: clamp(9px, 2.6vmin, 13px); font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.06em; color: #9a9aa6;
+}
+.settings-section:first-child { margin-top: 0; }
+
+/* option grid (layout + font tiles) — centered horizontally */
+.option-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(clamp(58px, 20vmin, 96px), 1fr));
+  gap: clamp(6px, 1.8vmin, 12px);
+  justify-content: center;
+}
+/* Layout + Font tabs: exactly 5 fixed-width tiles per row, centered, ~2x size. */
+.option-grid.grid-5 {
+  grid-template-columns: repeat(5, clamp(92px, 17vmin, 128px));
+  justify-content: center;
+}
+/* color swatches pack tighter (swatch size kept as-is). A FIXED 5-column track (10
+ * swatches -> a tidy 5x2 block) gives the grid a DEFINITE width, which is what lets its
+ * .color-section wrapper shrink-wrap and center it (#10) — auto-fill would stretch to
+ * fill the panel and defeat the centering. */
+.swatch-grid {
+  grid-template-columns: repeat(5, clamp(30px, 10vmin, 48px));
+  justify-content: center;
+}
+
+/* a selectable option tile */
+.option {
+  -webkit-app-region: no-drag;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit; cursor: pointer;
+  border-radius: 8px; padding: clamp(5px, 1.6vmin, 9px);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: clamp(3px, 1vmin, 6px); min-height: clamp(42px, 13vmin, 64px);
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.option:hover { background: rgba(255, 255, 255, 0.1); border-color: rgba(255, 255, 255, 0.3); }
+.option.is-selected, .option[aria-pressed="true"] {
+  border-color: #6cc0ff; background: rgba(108, 192, 255, 0.16);
+}
+.option-caption { font-size: clamp(8px, 2.4vmin, 12px); color: #c7c7d0; text-align: center; }
+
+/* Bigger tiles (~2x) on the Layout + Font tabs. */
+.grid-5 .option { min-height: clamp(82px, 24vmin, 120px); padding: clamp(7px, 2vmin, 12px); }
+.grid-5 .option-caption { font-size: clamp(9px, 2.1vmin, 13px); }
+
+/* font swatch: the sample time rendered in the candidate font (~2x) */
+.font-swatch { font-size: clamp(26px, 8vmin, 46px); line-height: 1; font-variant-numeric: tabular-nums; }
+
+/* ---- Font tab: the "Custom" tile (opens the system-font browser) ------- */
+/* The first tile in the Font grid. It REPLACES the old name bar + Edit button: its
+ * caption is always literally "Custom", its swatch shows the active custom font (set by
+ * reflect()), and clicking it opens the system-font browser. A dashed border sets it
+ * apart from the curated preset tiles as an "action" tile. When the Local Font Access
+ * API is absent (plain browser build) it's hidden (JS adds [hidden]) so it never offers
+ * a dead entry point. */
+.option-custom { border-style: dashed; }
+.option-custom[hidden] { display: none; }
+
+/* ---- the "Choose system font" overlay (system-font browser) ------------ */
+/* Hidden until the Custom tile is clicked (#app[data-fontbrowser="open"]). When open it
+ * takes over the tab area: the tab bar and the tab panels (including the Font tiles) all
+ * hide, and this overlay fills the remaining panel height with a fixed header + its OWN
+ * scroll. */
+#font-browser { display: none; flex: 1 1 auto; min-height: 0; flex-direction: column; -webkit-app-region: no-drag; }
+
+#app[data-fontbrowser="open"] .settings-tabs { display: none; }
+#app[data-fontbrowser="open"] .settings-body { display: none; }
+#app[data-fontbrowser="open"] #font-browser { display: flex; }
+
+.fb-header {
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: clamp(6px, 2vmin, 12px);
+  padding: clamp(5px, 1.8vmin, 10px) clamp(8px, 3vmin, 16px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+.fb-title { font-size: clamp(11px, 3.4vmin, 17px); font-weight: 600; text-align: center; flex: 1 1 auto; }
+.fb-btn {
+  -webkit-app-region: no-drag;
+  flex: 0 0 auto; border: none; cursor: pointer;
+  background: rgba(255, 255, 255, 0.12); color: #f2f2f4;
+  padding: clamp(4px, 1.4vmin, 8px) clamp(10px, 3vmin, 16px);
+  border-radius: 6px; font-size: clamp(10px, 2.8vmin, 14px); font-weight: 700;
+}
+.fb-btn:hover { background: rgba(255, 255, 255, 0.24); }
+.fb-save { background: rgba(108, 192, 255, 0.22); color: #cfe8ff; }
+.fb-save:hover { background: rgba(108, 192, 255, 0.36); }
+
+/* The card grid is the ONLY scroll region: its own overflow-y + a bounded height
+ * (flex:1 + min-height:0 inside the fixed-height panel) keep scrolling contained
+ * here, never bubbling to the whole settings panel. 3 bigger cards per row. */
+.fb-grid {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: clamp(6px, 1.8vmin, 12px);
+  padding: clamp(8px, 2.5vmin, 16px);
+  align-content: start;
+}
+.fb-card {
+  -webkit-app-region: no-drag;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04); color: inherit; cursor: pointer;
+  border-radius: 8px; padding: clamp(6px, 2vmin, 12px);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: clamp(4px, 1.2vmin, 8px); min-height: clamp(70px, 20vmin, 110px);
+  overflow: hidden;
+}
+.fb-card:hover { background: rgba(255, 255, 255, 0.1); border-color: rgba(255, 255, 255, 0.3); }
+.fb-card.is-selected, .fb-card[aria-pressed="true"] {
+  border-color: #6cc0ff; background: rgba(108, 192, 255, 0.16);
+}
+/* Preview: the sample time in that system font, as large as comfortably fits. */
+.fb-preview {
+  font-size: clamp(22px, 7vmin, 44px); line-height: 1;
+  max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+/* Family name under the preview: ellipsis-truncated when too long to fit. */
+.fb-cardname {
+  max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  font-size: clamp(9px, 2.3vmin, 13px); color: #c7c7d0; text-align: center;
+}
+
+/* color swatch chip */
+.swatch-chip {
+  display: block; width: 100%; aspect-ratio: 1 / 1;
+  border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.2);
+  min-height: clamp(22px, 8vmin, 40px);
+}
+.swatch-chip.swatch-text {
+  display: flex; align-items: center; justify-content: center;
+  background: #2b2b30; font-weight: 700; font-size: clamp(12px, 4.4vmin, 22px);
+}
+.option-swatch { padding: clamp(3px, 1vmin, 6px); gap: 0; min-height: 0; }
+
+/* Colors tab: each section is [heading + swatch grid + its own opacity slider],
+ * shrink-wrapped to the swatch grid's width and centered in the tab (#10). Because the
+ * wrapper is fit-content (sized by the definite-width swatch grid) and the slider is
+ * width:100%, the slider ends up EXACTLY as wide as its swatch block (#4) — the bg
+ * slider matches the bg swatches, the text slider matches the text swatches. */
+.color-section {
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 auto;
+}
+.color-section + .color-section { margin-top: clamp(6px, 2vmin, 12px); }
+
+/* opacity sliders (background + text) — a continuous value, not a tile group. */
+.slider-row { padding: clamp(2px, 1vmin, 6px) 2px clamp(4px, 1.5vmin, 8px); }
+.color-slider {
+  -webkit-app-region: no-drag;
+  width: 100%;
+  margin: 0;
+  cursor: pointer;
+  accent-color: #6cc0ff; /* themes the native range track/thumb in Chromium */
+}
+
+/* ---- layout PREVIEW tiles (the little arrangement diagrams) ------------ */
+
+.layout-preview {
+  width: clamp(78px, 15vmin, 118px);
+  height: clamp(50px, 9.5vmin, 76px);
+  flex-direction: column;
+  gap: clamp(3px, 1vmin, 6px);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  padding: clamp(5px, 1.6vmin, 9px);
+  box-sizing: border-box;
+  color: #e9e9ef;
+}
+.option.is-selected .layout-preview, .option[aria-pressed="true"] .layout-preview {
+  color: #6cc0ff;
+}
+.pv { background: currentColor; border-radius: 2px; display: block; }
+.pv-clock { width: 62%; height: clamp(5px, 1.8vmin, 9px); }
+.pv-sw { width: 46%; height: clamp(3px, 1.2vmin, 6px); opacity: 0.65; }
+.pv-sep { display: none; width: 3px; height: 3px; border-radius: 50%; background: currentColor; opacity: 0.6; }
+
+/* preview arrangements mirror the real layouts (crude but legible) */
+.layout-preview[data-layout="stopwatch-top"] .pv-sw { order: -1; }
+.layout-preview[data-layout="clock-left"] { flex-direction: row; gap: clamp(2px, 1vmin, 5px); }
+.layout-preview[data-layout="clock-left"] .pv-clock { width: 42%; height: clamp(6px, 2.2vmin, 11px); }
+.layout-preview[data-layout="clock-left"] .pv-sw { width: 30%; height: clamp(5px, 1.8vmin, 9px); }
+.layout-preview[data-layout="clock-left"] .pv-sep { display: block; }
+.layout-preview[data-layout="side-by-side"] { flex-direction: row; gap: clamp(3px, 1.4vmin, 7px); }
+.layout-preview[data-layout="side-by-side"] .pv-clock { width: 40%; height: clamp(6px, 2.2vmin, 11px); }
+.layout-preview[data-layout="side-by-side"] .pv-sw { width: 32%; height: clamp(5px, 1.8vmin, 9px); }
+.layout-preview[data-layout="split"] { flex-direction: row; justify-content: space-between; }
+.layout-preview[data-layout="split"] .pv-clock { width: 44%; height: clamp(7px, 2.6vmin, 13px); }
+.layout-preview[data-layout="split"] .pv-sw { width: 26%; }
+.layout-preview[data-layout="one-line"] { flex-direction: row; gap: clamp(2px, 1vmin, 5px); }
+.layout-preview[data-layout="one-line"] .pv-clock,
+.layout-preview[data-layout="one-line"] .pv-sw { height: clamp(4px, 1.5vmin, 7px); }
+.layout-preview[data-layout="dash"] .pv-sep { display: block; width: clamp(6px, 2.4vmin, 12px); height: 2px; border-radius: 1px; }
+.layout-preview[data-layout="clock-hero"] .pv-clock { height: clamp(8px, 3vmin, 15px); width: 70%; }
+.layout-preview[data-layout="clock-hero"] .pv-sw { width: 38%; }
+.layout-preview[data-layout="stopwatch-hero"] .pv-sw { order: -1; height: clamp(8px, 3vmin, 15px); width: 62%; opacity: 0.9; }
+.layout-preview[data-layout="stopwatch-hero"] .pv-clock { height: clamp(4px, 1.5vmin, 7px); width: 42%; }
+.layout-preview[data-layout="centered-gap"] { gap: clamp(5px, 2.4vmin, 11px); }
+
+/* ---- LIVE PREVIEW (a mini clone of the real face, top of the panel) ----
+ * Carries no look logic of its own: pill color/text/font inherit from the same
+ * :root vars the real #app uses, and arrangement is driven by #app[data-layout]
+ * (this is a descendant of #app), so every option click updates it instantly.
+ * Sizes are em-based off the pill's own small font-size — a parallel, scaled
+ * mirror of the real vmin layout sizes — so the preview stays mini and never
+ * inherits the window-sized readouts. */
+
+.settings-preview-wrap {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: center;
+  padding: clamp(8px, 3vmin, 16px) 0 clamp(2px, 1.2vmin, 6px);
+  -webkit-app-region: no-drag;
+}
+
+/* Checkerboard backdrop behind the preview pill — the classic "transparent"
+ * indicator, so lowering the opacity slider visibly shows it through the pill
+ * (approximating what the user will see over their desktop). */
+#settings-preview-backdrop {
+  display: inline-block;
+  line-height: 0;
+  border-radius: clamp(14px, 3.4vmin, 22px);
+  overflow: hidden;
+  background-color: #dcdcdc;
+  background-image:
+    linear-gradient(45deg, #9a9a9a 25%, transparent 25%),
+    linear-gradient(-45deg, #9a9a9a 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #9a9a9a 75%),
+    linear-gradient(-45deg, transparent 75%, #9a9a9a 75%);
+  background-size: 14px 14px;
+  background-position: 0 0, 0 7px, 7px -7px, -7px 0;
+}
+
+#settings-preview {
+  /* FIXED size (#7): the preview box is ~one-half the (grown) settings window width and
+   * NEVER tracks the real widget window — deliberately plain px, NOT vmin, so resizing
+   * the widget doesn't scale the preview. (The settings window grows to ~720px wide when
+   * open, so 360px ≈ half; max-width guards the rare too-narrow panel.) The clock INSIDE
+   * is scaled to fill this box by app.js's fitPreview() (its own measure-and-fill pass,
+   * independent of the widget's live #face scale), which bakes the result into this
+   * element's font-size — every readout below is sized in em, so they scale together. */
+  width: 360px;
+  max-width: 100%;
+  aspect-ratio: 240 / 130;
+  border-radius: clamp(14px, 3.4vmin, 22px);
+  background: rgba(var(--bg-rgb), var(--pill-opacity));
+  /* Clip the background to the padding box so the translucent fill can't bleed a
+   * sub-pixel seam past the rounded corners (#4). */
+  background-clip: padding-box;
+  /* Mirror the real pill: text uses --text-rgb + --text-opacity, so the preview clock
+   * fades with the text-opacity slider exactly like the live widget does. */
+  color: rgba(var(--text-rgb), var(--text-opacity, 1));
+  font-family: var(--font);
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  /* Drop shadow only. The old `inset 0 0 0 1px` ring traced the border-radius and read as
+   * a jaggy 1px fringe on the rounded corners (#4); dropping it leaves the corners clean
+   * in both light and dark. overflow:hidden + background-clip:padding-box keep the fill
+   * tight to the radius. */
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.4);
+  /* Design base; app.js's fitPreview() overrides this inline to fill the fixed box. */
+  font-size: 34px;
+  --sp-clock: 2.6em;
+  --sp-merid: 0.95em;
+  --sp-sw: 1.7em;
+  --sp-gap: 0em;
+  --sp-pad: 0em;
+}
+
+.sp-face {
+  flex-direction: column;
+  gap: var(--sp-gap);
+  padding: 0 var(--sp-pad);
+  line-height: 1;
+  width: 100%;
+  box-sizing: border-box;
+}
+.sp-clock { display: flex; align-items: baseline; justify-content: center; }
+#sp-time { font-size: var(--sp-clock); font-weight: 600; line-height: 1; }
+#sp-meridiem { font-size: var(--sp-merid); margin-left: 0.3em; opacity: 0.8; font-weight: 600; }
+#sp-meridiem:empty { display: none; }
+.sp-sw { font-size: var(--sp-sw); opacity: 0.9; line-height: 1.1; }
+.sp-sep { display: none; opacity: 0.5; font-weight: 600; line-height: 1; }
+
+/* per-layout preview sizing/arrangement (parallels the real #face rules) */
+#app[data-layout="stopwatch-top"] .sp-sw { order: -1; }
+
+#app[data-layout="clock-left"] .sp-face { flex-direction: row; gap: 0.5em; }
+#app[data-layout="clock-left"] #settings-preview { --sp-clock: 1.9em; --sp-merid: 0.7em; --sp-sw: 1.3em; }
+#app[data-layout="clock-left"] .sp-sep { display: inline-block; font-size: 1.4em; }
+#app[data-layout="clock-left"] .sp-sep::before { content: "\00B7"; }
+
+#app[data-layout="side-by-side"] .sp-face { flex-direction: row; gap: 0.7em; }
+#app[data-layout="side-by-side"] #settings-preview { --sp-clock: 1.9em; --sp-merid: 0.7em; --sp-sw: 1.3em; }
+
+#app[data-layout="split"] .sp-face { flex-direction: row; justify-content: space-between; }
+#app[data-layout="split"] #settings-preview { --sp-clock: 2.2em; --sp-merid: 0.7em; --sp-sw: 1.1em; --sp-pad: 0.6em; }
+
+#app[data-layout="one-line"] .sp-face { flex-direction: row; gap: 0.6em; align-items: baseline; }
+#app[data-layout="one-line"] #settings-preview { --sp-clock: 1.4em; --sp-merid: 0.55em; --sp-sw: 1.1em; }
+
+#app[data-layout="dash"] #settings-preview { --sp-gap: 0.15em; }
+#app[data-layout="dash"] .sp-sep { display: block; font-size: 0.9em; }
+#app[data-layout="dash"] .sp-sep::before { content: "\2013"; }
+
+#app[data-layout="clock-hero"] #settings-preview { --sp-clock: 3.4em; --sp-merid: 1em; --sp-sw: 1.1em; }
+
+#app[data-layout="stopwatch-hero"] .sp-sw { order: -1; }
+#app[data-layout="stopwatch-hero"] #settings-preview { --sp-clock: 1.3em; --sp-merid: 0.55em; --sp-sw: 2.6em; }
+
+#app[data-layout="centered-gap"] #settings-preview { --sp-gap: 0.6em; }
+
+/* ---- per-readout visibility (tray: Show clock / Show stopwatch) --------- */
+/* Hide a readout when its toggle is off; the separator makes no sense with one
+ * readout gone, so it hides too. With BOTH off the pill is intentionally blank.
+ * Placed after the layout rules so these beat the per-layout `display` values. */
+#app[data-show-clock="false"] #clock { display: none; }
+#app[data-show-stopwatch="false"] #stopwatch { display: none; }
+#app[data-show-clock="false"] #separator,
+#app[data-show-stopwatch="false"] #separator { display: none; }
+/* the settings-panel live preview mirrors the same visibility */
+#app[data-show-clock="false"] .sp-clock { display: none; }
+#app[data-show-stopwatch="false"] .sp-sw { display: none; }
+#app[data-show-clock="false"] .sp-sep,
+#app[data-show-stopwatch="false"] .sp-sep { display: none; }
+
+/* ---- respect the user's motion preference ------------------------------ */
+@media (prefers-reduced-motion: reduce) {
+  #app, #app::after, #face, #grip, #controls, .option, .tab { transition: none; }
+}

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Overtime</title>
+
+  <!--
+    Asset references are RELATIVE and plain classic scripts (not ES modules, and
+    we don't lean on defer/async ordering), so the single-file build's inliner
+    can swap each <link>/<script> for its inlined contents in document order
+    (PLAN §4.4). Script load order matters:
+      1. format.js, stopwatch.js       - no deps
+      2. config-schema.js              - needs stopwatch
+      3. bridge.js                     - needs config-schema
+      4. settings-apply.js             - needs config-schema (font map) + DOM
+      5. settings-panel.js             - needs config-schema + settings-apply
+      6. app.js                        - needs all of the above
+  -->
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <!--
+    #app carries the state the CSS keys off:
+      data-env    electron | browser   (hides the grip in a browser tab)
+      data-status stopped | running | paused
+      data-hover  false | true         (fades in a 50%-black overlay on hover — a grab/drag target)
+      data-theme  dark | light         (set by settings-apply.js)
+  -->
+  <div id="app" data-env="browser" data-status="stopped" data-hover="false" data-theme="dark">
+
+    <!--
+      The draggable face: the two readouts. `.arrange` + #app[data-layout] drive
+      the arrangement (the same mechanism the panel's preview tiles use). The
+      #separator shows a "·" or "–" only for the layouts that want one.
+    -->
+    <div id="face" class="arrange">
+      <div id="clock" class="r-clock">
+        <span id="clock-time">--:--</span>
+        <span id="clock-meridiem">AM</span>
+      </div>
+      <span id="separator" class="r-sep" aria-hidden="true"></span>
+      <div id="stopwatch" class="r-sw">00:00:00</div>
+    </div>
+
+    <!-- On-pill controls — BROWSER BUILD ONLY. Pass C removed these because the Electron
+         build drives everything from the tray + native right-click menu; but a plain browser
+         tab (the single-file build) has neither, so it needs on-pill buttons to run the
+         stopwatch and open settings. CSS shows this cluster ONLY when data-env is exactly
+         "browser" (a POSITIVE gate; a missing/garbage value stays hidden) and hides it
+         (display:none) in Electron, where the tray/right-click menu stays the sole control
+         path. There is deliberately NO Quit
+         button (#btn-quit) — you can't quit a web page. The cluster fades in on hover (like
+         the grip) and paints above the 50%-black hover tint so it stays readable.
+         app.js wires the clicks + paints the Play/Pause/Reset disabled state. -->
+    <div id="controls" role="group" aria-label="Stopwatch controls">
+      <button type="button" id="btn-play" aria-label="Play">&#9654;</button>
+      <button type="button" id="btn-pause" aria-label="Pause">&#9208;</button>
+      <button type="button" id="btn-reset" aria-label="Reset">&#8634;</button>
+      <button type="button" id="btn-settings" aria-label="Settings">&#9881;</button>
+    </div>
+
+    <!-- The tabbed settings panel is built by settings-panel.js and appended
+         here at boot; it overlays the pill when #app[data-settings="open"]. -->
+
+    <!-- Custom resize grip (bottom-right). Electron only; hidden in browser. -->
+    <div id="grip" aria-hidden="true"></div>
+  </div>
+
+  <!-- Shared modules first (dependency order), then renderer glue. -->
+  <script src="../shared/format.js"></script>
+  <script src="../shared/stopwatch.js"></script>
+  <script src="../shared/config-schema.js"></script>
+  <script src="./bridge.js"></script>
+  <script src="./settings-apply.js"></script>
+  <script src="./settings-panel.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>

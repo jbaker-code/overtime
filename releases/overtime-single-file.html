@@ -1,0 +1,1984 @@
+<!doctype html>
+<!--
+Overtime v1.0.0 - single-file browser build, generated 2026-11-01T05:49:12.370Z
+Everything (HTML, CSS, JS) is inlined into this one file. Do not edit; rebuild with `npm run build:single`.
+Browser-mode limits: no always-on-top, no frameless window, no drag-to-move, no quit button / resize grip.
+Clock, stopwatch and hover controls work; state persists via localStorage (per browser, per origin).
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Overtime</title>
+
+  <!--
+    Asset references are RELATIVE and plain classic scripts (not ES modules, and
+    we don't lean on defer/async ordering), so the single-file build's inliner
+    can swap each <link>/<script> for its inlined contents in document order
+    (PLAN §4.4). Script load order matters:
+      1. format.js, stopwatch.js       - no deps
+      2. config-schema.js              - needs stopwatch
+      3. bridge.js                     - needs config-schema
+      4. settings-apply.js             - needs config-schema (font map) + DOM
+      5. settings-panel.js             - needs config-schema + settings-apply
+      6. app.js                        - needs all of the above
+  -->
+  <style>
+/* src/renderer/styles.css
+ * ---------------------------------------------------------------------------
+ * The whole look: a translucent pill with big tabular numerals that scale with
+ * the window (vmin units + the aspect lock in main.js mean the content always
+ * fills the frame). Controls fade in on hover; everything's see-through at the
+ * corners so the rounded-pill shape reads over any screen content.
+ *
+ * v2: the pill color, text color, typeface and ARRANGEMENT are all settings.
+ * They arrive as CSS custom properties (--bg-rgb, --pill-opacity, --text-color,
+ * --font) and the [data-layout] attribute, all set by settings-apply.js. The
+ * tabbed settings panel (bottom of this file) overlays the pill on demand.
+ * ------------------------------------------------------------------------- */
+
+:root {
+  /* Overwritten at runtime by applySettings(); these are the defaults = the
+   * original look (black pill, white numerals, system font, stacked layout). */
+  --bg-rgb: 0, 0, 0;
+  --pill-opacity: 1;
+  --text-color: #ffffff;
+  --font: -apple-system, "SF Pro Display", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+
+  /* Per-layout readout sizes, as em multiples of #face's fixed base font-size
+   * (the 'stack' defaults). app.js scales the whole face to fill the pill, so
+   * these are window-INDEPENDENT ratios, not absolute sizes. */
+  --clock-size: 3em;
+  --merid-size: 1em;
+  --sw-size: 2em;
+  --face-gap: 0em;
+}
+
+/* Transparent everywhere so the OS window's see-through corners show. */
+html, body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+/* The pill itself. inset:0 fills the frameless window; the rounded, tinted,
+ * translucent background is the only visible surface when idle. */
+#app {
+  position: fixed;
+  inset: 0;
+  border-radius: 6vmin;
+  background: rgba(var(--bg-rgb), var(--pill-opacity));
+  color: var(--text-color);
+  font-family: var(--font);
+  font-variant-numeric: tabular-nums; /* digits don't jiggle as they change */
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  box-sizing: border-box;
+  overflow: hidden;
+  /* Grab ANY empty area of the pill to move the window. Every interactive
+   * child (buttons, grip, panel controls) sets no-drag so clicks still land. */
+  -webkit-app-region: drag;
+}
+
+/* ---- the draggable face + readouts ------------------------------------- */
+
+/* The face is the drag handle for the frameless window. Every interactive
+ * child (buttons, grip, panel) opts back out with no-drag. */
+.arrange {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#face {
+  -webkit-app-region: drag;
+  flex-direction: column;
+  gap: var(--face-gap);
+  line-height: 1;
+  /* Fixed "design" base size (the layout sizes below are em multiples of this).
+   * app.js measures the face's natural box and applies transform: scale() so the
+   * content FILLS the pill (minus padding). We deliberately no longer size in
+   * vmin — vmin collapses to the SMALLER dimension, which is what made the clock
+   * tiny in a short-wide window. No transition on transform (it's set every tick/
+   * resize and would otherwise animate/jank). */
+  font-size: 100px;
+  transform-origin: center center;
+  will-change: transform;
+}
+
+#clock { display: flex; align-items: baseline; justify-content: center; }
+#clock-time { font-size: var(--clock-size); line-height: 1; font-weight: 600; }
+#clock-meridiem { font-size: var(--merid-size); margin-left: 0.3em; opacity: 0.8; font-weight: 600; }
+#clock-meridiem:empty { display: none; } /* 24-hour mode -> collapse it */
+#stopwatch { font-size: var(--sw-size); line-height: 1.1; opacity: 0.9; }
+
+/* The separator ("·" or "–") only appears for the layouts that ask for it. */
+#separator { display: none; opacity: 0.5; font-weight: 600; line-height: 1; }
+
+/* ---- LAYOUTS (10) — driven by #app[data-layout] ------------------------ */
+
+/* stack — the default: clock over stopwatch (handled by the base rules). */
+
+/* stopwatch-top — stopwatch above the clock. */
+#app[data-layout="stopwatch-top"] #stopwatch { order: -1; }
+
+/* clock-left — clock · stopwatch, horizontal with a dot + real spacing. */
+#app[data-layout="clock-left"] #face { flex-direction: row; gap: 0.3em; }
+#app[data-layout="clock-left"] { --clock-size: 2.2em; --merid-size: 0.8em; --sw-size: 1.5em; }
+#app[data-layout="clock-left"] #separator { display: inline-block; font-size: 1.6em; }
+#app[data-layout="clock-left"] #separator::before { content: "\00B7"; } /* middle dot */
+
+/* side-by-side — horizontal, no separator. */
+#app[data-layout="side-by-side"] #face { flex-direction: row; gap: 0.7em; }
+#app[data-layout="side-by-side"] { --clock-size: 2.2em; --merid-size: 0.8em; --sw-size: 1.5em; }
+
+/* split — clock big on the left, stopwatch small on the right, extra gap. */
+#app[data-layout="split"] #face { flex-direction: row; gap: 1em; }
+#app[data-layout="split"] { --clock-size: 2.6em; --merid-size: 0.8em; --sw-size: 1.3em; }
+
+/* one-line — a single compact inline row, both readouts small. A roomier gap
+   (~a non-breaking space) so the clock and stopwatch don't crowd each other. */
+#app[data-layout="one-line"] #face { flex-direction: row; gap: 0.6em; align-items: baseline; }
+#app[data-layout="one-line"] { --clock-size: 1.6em; --merid-size: 0.6em; --sw-size: 1.3em; }
+
+/* dash — vertical, with a dash between the two readouts. */
+#app[data-layout="dash"] { --face-gap: 0.1em; }
+#app[data-layout="dash"] #separator { display: block; font-size: 1em; }
+#app[data-layout="dash"] #separator::before { content: "\2013"; } /* en dash */
+
+/* clock-hero — oversized clock, small stopwatch beneath. */
+#app[data-layout="clock-hero"] { --clock-size: 4em; --merid-size: 1.2em; --sw-size: 1.3em; }
+
+/* stopwatch-hero — oversized stopwatch on top, small clock beneath. */
+#app[data-layout="stopwatch-hero"] #stopwatch { order: -1; }
+#app[data-layout="stopwatch-hero"] { --clock-size: 1.5em; --merid-size: 0.6em; --sw-size: 3em; }
+
+/* centered-gap — stacked, but with extra breathing room between. */
+#app[data-layout="centered-gap"] { --face-gap: 0.6em; }
+
+/* ---- the hover control strip ------------------------------------------- */
+
+#controls {
+  position: absolute; /* OVERLAY — never reserves layout space, so the clock/
+                          stopwatch fill the whole pill whether or not controls show */
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  gap: 2vmin;
+  justify-content: center;
+  align-items: center;
+  padding: 2vmin 0; /* keep the INTERACTIVE strip short so it doesn't swallow a
+                       short-wide pill; the scrim below is non-interactive */
+  opacity: 0; /* hidden until hover */
+  pointer-events: none;
+  transition: opacity 150ms ease;
+  -webkit-app-region: no-drag;
+}
+/* Subtle bottom scrim so controls stay legible over the content. It's a
+ * pointer-events:none pseudo so it never intercepts clicks/hover, and it rises
+ * above the (short) button strip. Fades in with #controls (shares its opacity).
+ * Clipped to the pill by #app's overflow:hidden. */
+#controls::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 320%;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.5) 0%, rgba(0, 0, 0, 0.26) 55%, rgba(0, 0, 0, 0) 100%);
+}
+/* Light pill -> light scrim so dark control glyphs stay readable. */
+#app[data-theme="light"] #controls::before {
+  background: linear-gradient(to top, rgba(255, 255, 255, 0.62) 0%, rgba(255, 255, 255, 0.32) 55%, rgba(255, 255, 255, 0) 100%);
+}
+
+#app[data-hover="true"] #controls { opacity: 1; pointer-events: auto; }
+
+#controls button {
+  -webkit-app-region: no-drag;
+  font-size: 9vmin;
+  line-height: 1;
+  width: 1.6em;
+  height: 1.6em;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.14);
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 120ms ease, opacity 120ms ease;
+}
+
+#controls button:hover { background: rgba(255, 255, 255, 0.28); }
+#controls button:active { background: rgba(255, 255, 255, 0.4); }
+
+/* Disabled controls dim and stop responding (the state machine decides which). */
+#controls button:disabled { opacity: 0.3; cursor: default; pointer-events: none; }
+
+/* data-theme is derived from the background brightness so the control buttons
+ * keep contrast on a pale pill. */
+#app[data-theme="light"] #controls button { background: rgba(0, 0, 0, 0.1); }
+#app[data-theme="light"] #controls button:hover { background: rgba(0, 0, 0, 0.2); }
+
+/* The × quit button is Electron-only (a browser tab closes itself). */
+#app[data-env="browser"] #btn-quit { display: none; }
+
+/* ---- the resize grip ---------------------------------------------------- */
+
+#grip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 8vmin;
+  height: 8vmin;
+  cursor: nwse-resize;
+  -webkit-app-region: no-drag;
+  opacity: 0;
+  transition: opacity 150ms ease;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0,
+    transparent 1.2vmin,
+    rgba(255, 255, 255, 0.5) 1.2vmin,
+    rgba(255, 255, 255, 0.5) 1.6vmin
+  );
+  -webkit-mask-image: linear-gradient(-45deg, #000 0 55%, transparent 55%);
+  mask-image: linear-gradient(-45deg, #000 0 55%, transparent 55%);
+  border-bottom-right-radius: 6vmin;
+}
+
+#app[data-hover="true"] #grip { opacity: 1; }
+#app[data-env="browser"] #grip { display: none; } /* meaningless in a tab */
+#app[data-theme="light"] #grip {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0,
+    transparent 1.2vmin,
+    rgba(0, 0, 0, 0.45) 1.2vmin,
+    rgba(0, 0, 0, 0.45) 1.6vmin
+  );
+}
+
+/* =========================================================================
+ * SETTINGS PANEL (v2) — built by settings-panel.js, overlays the pill.
+ * Its own opaque dark surface so options stay readable whatever the pill
+ * color is. Sizes use clamp(px, vmin, px) so it scales with the window but
+ * never gets unusably tiny or silly-huge.
+ * ===================================================================== */
+
+#settings-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: none; /* shown when #app[data-settings="open"] */
+  flex-direction: column;
+  background: rgba(18, 18, 22, 0.98);
+  color: #f2f2f4;
+  border-radius: 6vmin;
+  overflow: hidden;
+  -webkit-app-region: no-drag;
+  font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  font-variant-numeric: normal;
+}
+
+#app[data-settings="open"] #settings-panel { display: flex; }
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: clamp(6px, 2.5vmin, 14px) clamp(8px, 3vmin, 18px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  flex: 0 0 auto;
+  /* The title bar is a drag handle for the window (× stays no-drag below). */
+  -webkit-app-region: drag;
+}
+.settings-title { font-size: clamp(11px, 3.4vmin, 17px); font-weight: 600; letter-spacing: 0.02em; }
+.settings-close {
+  -webkit-app-region: no-drag;
+  border: none; background: rgba(255, 255, 255, 0.12); color: inherit;
+  width: clamp(20px, 6vmin, 30px); height: clamp(20px, 6vmin, 30px);
+  border-radius: 50%; cursor: pointer; font-size: clamp(12px, 3.6vmin, 18px);
+  line-height: 1; display: inline-flex; align-items: center; justify-content: center;
+}
+.settings-close:hover { background: rgba(255, 255, 255, 0.24); }
+
+/* tabs */
+.settings-tabs {
+  display: flex; gap: 2px; flex: 0 0 auto;
+  padding: clamp(4px, 1.5vmin, 8px) clamp(6px, 2.5vmin, 14px) 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+.tab {
+  -webkit-app-region: no-drag;
+  flex: 1 1 0; border: none; background: transparent; color: #b9b9c2;
+  padding: clamp(5px, 1.8vmin, 10px) 4px; cursor: pointer;
+  font-size: clamp(10px, 3vmin, 15px); font-weight: 600;
+  border-bottom: 2px solid transparent; border-radius: 4px 4px 0 0;
+}
+.tab:hover { color: #e8e8ee; background: rgba(255, 255, 255, 0.05); }
+.tab.is-active, .tab[aria-selected="true"] { color: #fff; border-bottom-color: #6cc0ff; }
+
+/* scrollable body */
+.settings-body { flex: 1 1 auto; overflow: auto; padding: clamp(8px, 3vmin, 16px); }
+.tab-panel { display: none; }
+.tab-panel.is-active { display: block; }
+
+.settings-section {
+  margin: clamp(4px, 1.5vmin, 10px) 0 clamp(4px, 1.2vmin, 8px);
+  font-size: clamp(9px, 2.6vmin, 13px); font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.06em; color: #9a9aa6;
+}
+.settings-section:first-child { margin-top: 0; }
+
+/* option grid (layout + font tiles) — centered horizontally */
+.option-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(clamp(58px, 20vmin, 96px), 1fr));
+  gap: clamp(6px, 1.8vmin, 12px);
+  justify-content: center;
+}
+/* Layout + Font tabs: exactly 5 fixed-width tiles per row, centered, ~2x size. */
+.option-grid.grid-5 {
+  grid-template-columns: repeat(5, clamp(92px, 17vmin, 128px));
+  justify-content: center;
+}
+/* color swatches pack tighter, rows centered (swatch size kept as-is) */
+.swatch-grid {
+  grid-template-columns: repeat(auto-fill, clamp(30px, 10vmin, 48px));
+  justify-content: center;
+}
+
+/* a selectable option tile */
+.option {
+  -webkit-app-region: no-drag;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit; cursor: pointer;
+  border-radius: 8px; padding: clamp(5px, 1.6vmin, 9px);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: clamp(3px, 1vmin, 6px); min-height: clamp(42px, 13vmin, 64px);
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.option:hover { background: rgba(255, 255, 255, 0.1); border-color: rgba(255, 255, 255, 0.3); }
+.option.is-selected, .option[aria-pressed="true"] {
+  border-color: #6cc0ff; background: rgba(108, 192, 255, 0.16);
+}
+.option-caption { font-size: clamp(8px, 2.4vmin, 12px); color: #c7c7d0; text-align: center; }
+
+/* Bigger tiles (~2x) on the Layout + Font tabs. */
+.grid-5 .option { min-height: clamp(82px, 24vmin, 120px); padding: clamp(7px, 2vmin, 12px); }
+.grid-5 .option-caption { font-size: clamp(9px, 2.1vmin, 13px); }
+
+/* font swatch: the sample time rendered in the candidate font (~2x) */
+.font-swatch { font-size: clamp(26px, 8vmin, 46px); line-height: 1; font-variant-numeric: tabular-nums; }
+
+/* color swatch chip */
+.swatch-chip {
+  display: block; width: 100%; aspect-ratio: 1 / 1;
+  border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.2);
+  min-height: clamp(22px, 8vmin, 40px);
+}
+.swatch-chip.swatch-text {
+  display: flex; align-items: center; justify-content: center;
+  background: #2b2b30; font-weight: 700; font-size: clamp(12px, 4.4vmin, 22px);
+}
+.option-swatch { padding: clamp(3px, 1vmin, 6px); gap: 0; min-height: 0; }
+
+/* opacity / transparency slider */
+.opacity-row { padding: clamp(2px, 1vmin, 6px) 2px clamp(4px, 1.5vmin, 8px); }
+#opacity-slider {
+  -webkit-app-region: no-drag;
+  width: 100%;
+  margin: 0;
+  cursor: pointer;
+  accent-color: #6cc0ff; /* themes the native range track/thumb in Chromium */
+}
+
+/* ---- layout PREVIEW tiles (the little arrangement diagrams) ------------ */
+
+.layout-preview {
+  width: clamp(78px, 15vmin, 118px);
+  height: clamp(50px, 9.5vmin, 76px);
+  flex-direction: column;
+  gap: clamp(3px, 1vmin, 6px);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  padding: clamp(5px, 1.6vmin, 9px);
+  box-sizing: border-box;
+  color: #e9e9ef;
+}
+.option.is-selected .layout-preview, .option[aria-pressed="true"] .layout-preview {
+  color: #6cc0ff;
+}
+.pv { background: currentColor; border-radius: 2px; display: block; }
+.pv-clock { width: 62%; height: clamp(5px, 1.8vmin, 9px); }
+.pv-sw { width: 46%; height: clamp(3px, 1.2vmin, 6px); opacity: 0.65; }
+.pv-sep { display: none; width: 3px; height: 3px; border-radius: 50%; background: currentColor; opacity: 0.6; }
+
+/* preview arrangements mirror the real layouts (crude but legible) */
+.layout-preview[data-layout="stopwatch-top"] .pv-sw { order: -1; }
+.layout-preview[data-layout="clock-left"] { flex-direction: row; gap: clamp(2px, 1vmin, 5px); }
+.layout-preview[data-layout="clock-left"] .pv-clock { width: 42%; height: clamp(6px, 2.2vmin, 11px); }
+.layout-preview[data-layout="clock-left"] .pv-sw { width: 30%; height: clamp(5px, 1.8vmin, 9px); }
+.layout-preview[data-layout="clock-left"] .pv-sep { display: block; }
+.layout-preview[data-layout="side-by-side"] { flex-direction: row; gap: clamp(3px, 1.4vmin, 7px); }
+.layout-preview[data-layout="side-by-side"] .pv-clock { width: 40%; height: clamp(6px, 2.2vmin, 11px); }
+.layout-preview[data-layout="side-by-side"] .pv-sw { width: 32%; height: clamp(5px, 1.8vmin, 9px); }
+.layout-preview[data-layout="split"] { flex-direction: row; justify-content: space-between; }
+.layout-preview[data-layout="split"] .pv-clock { width: 44%; height: clamp(7px, 2.6vmin, 13px); }
+.layout-preview[data-layout="split"] .pv-sw { width: 26%; }
+.layout-preview[data-layout="one-line"] { flex-direction: row; gap: clamp(2px, 1vmin, 5px); }
+.layout-preview[data-layout="one-line"] .pv-clock,
+.layout-preview[data-layout="one-line"] .pv-sw { height: clamp(4px, 1.5vmin, 7px); }
+.layout-preview[data-layout="dash"] .pv-sep { display: block; width: clamp(6px, 2.4vmin, 12px); height: 2px; border-radius: 1px; }
+.layout-preview[data-layout="clock-hero"] .pv-clock { height: clamp(8px, 3vmin, 15px); width: 70%; }
+.layout-preview[data-layout="clock-hero"] .pv-sw { width: 38%; }
+.layout-preview[data-layout="stopwatch-hero"] .pv-sw { order: -1; height: clamp(8px, 3vmin, 15px); width: 62%; opacity: 0.9; }
+.layout-preview[data-layout="stopwatch-hero"] .pv-clock { height: clamp(4px, 1.5vmin, 7px); width: 42%; }
+.layout-preview[data-layout="centered-gap"] { gap: clamp(5px, 2.4vmin, 11px); }
+
+/* ---- LIVE PREVIEW (a mini clone of the real face, top of the panel) ----
+ * Carries no look logic of its own: pill color/text/font inherit from the same
+ * :root vars the real #app uses, and arrangement is driven by #app[data-layout]
+ * (this is a descendant of #app), so every option click updates it instantly.
+ * Sizes are em-based off the pill's own small font-size — a parallel, scaled
+ * mirror of the real vmin layout sizes — so the preview stays mini and never
+ * inherits the window-sized readouts. */
+
+.settings-preview-wrap {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: center;
+  padding: clamp(8px, 3vmin, 16px) 0 clamp(2px, 1.2vmin, 6px);
+  -webkit-app-region: no-drag;
+}
+
+/* Checkerboard backdrop behind the preview pill — the classic "transparent"
+ * indicator, so lowering the opacity slider visibly shows it through the pill
+ * (approximating what the user will see over their desktop). */
+#settings-preview-backdrop {
+  display: inline-block;
+  line-height: 0;
+  border-radius: clamp(14px, 3.4vmin, 22px);
+  overflow: hidden;
+  background-color: #dcdcdc;
+  background-image:
+    linear-gradient(45deg, #9a9a9a 25%, transparent 25%),
+    linear-gradient(-45deg, #9a9a9a 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #9a9a9a 75%),
+    linear-gradient(-45deg, transparent 75%, #9a9a9a 75%);
+  background-size: 14px 14px;
+  background-position: 0 0, 0 7px, 7px -7px, -7px 0;
+}
+
+#settings-preview {
+  /* ~3x the old mini preview so the host can actually read the look */
+  width: clamp(300px, 62vmin, 420px);
+  aspect-ratio: 240 / 130;
+  border-radius: clamp(14px, 3.4vmin, 22px);
+  background: rgba(var(--bg-rgb), var(--pill-opacity));
+  color: var(--text-color);
+  font-family: var(--font);
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  /* base = the 'stack' layout; per-layout overrides below mirror the real ratios */
+  font-size: clamp(20px, 7vmin, 34px);
+  --sp-clock: 2.6em;
+  --sp-merid: 0.95em;
+  --sp-sw: 1.7em;
+  --sp-gap: 0em;
+  --sp-pad: 0em;
+}
+
+.sp-face {
+  flex-direction: column;
+  gap: var(--sp-gap);
+  padding: 0 var(--sp-pad);
+  line-height: 1;
+  width: 100%;
+  box-sizing: border-box;
+}
+.sp-clock { display: flex; align-items: baseline; justify-content: center; }
+#sp-time { font-size: var(--sp-clock); font-weight: 600; line-height: 1; }
+#sp-meridiem { font-size: var(--sp-merid); margin-left: 0.3em; opacity: 0.8; font-weight: 600; }
+#sp-meridiem:empty { display: none; }
+.sp-sw { font-size: var(--sp-sw); opacity: 0.9; line-height: 1.1; }
+.sp-sep { display: none; opacity: 0.5; font-weight: 600; line-height: 1; }
+
+/* per-layout preview sizing/arrangement (parallels the real #face rules) */
+#app[data-layout="stopwatch-top"] .sp-sw { order: -1; }
+
+#app[data-layout="clock-left"] .sp-face { flex-direction: row; gap: 0.5em; }
+#app[data-layout="clock-left"] #settings-preview { --sp-clock: 1.9em; --sp-merid: 0.7em; --sp-sw: 1.3em; }
+#app[data-layout="clock-left"] .sp-sep { display: inline-block; font-size: 1.4em; }
+#app[data-layout="clock-left"] .sp-sep::before { content: "\00B7"; }
+
+#app[data-layout="side-by-side"] .sp-face { flex-direction: row; gap: 0.7em; }
+#app[data-layout="side-by-side"] #settings-preview { --sp-clock: 1.9em; --sp-merid: 0.7em; --sp-sw: 1.3em; }
+
+#app[data-layout="split"] .sp-face { flex-direction: row; justify-content: space-between; }
+#app[data-layout="split"] #settings-preview { --sp-clock: 2.2em; --sp-merid: 0.7em; --sp-sw: 1.1em; --sp-pad: 0.6em; }
+
+#app[data-layout="one-line"] .sp-face { flex-direction: row; gap: 0.6em; align-items: baseline; }
+#app[data-layout="one-line"] #settings-preview { --sp-clock: 1.4em; --sp-merid: 0.55em; --sp-sw: 1.1em; }
+
+#app[data-layout="dash"] #settings-preview { --sp-gap: 0.15em; }
+#app[data-layout="dash"] .sp-sep { display: block; font-size: 0.9em; }
+#app[data-layout="dash"] .sp-sep::before { content: "\2013"; }
+
+#app[data-layout="clock-hero"] #settings-preview { --sp-clock: 3.4em; --sp-merid: 1em; --sp-sw: 1.1em; }
+
+#app[data-layout="stopwatch-hero"] .sp-sw { order: -1; }
+#app[data-layout="stopwatch-hero"] #settings-preview { --sp-clock: 1.3em; --sp-merid: 0.55em; --sp-sw: 2.6em; }
+
+#app[data-layout="centered-gap"] #settings-preview { --sp-gap: 0.6em; }
+
+/* ---- per-readout visibility (tray: Show clock / Show stopwatch) --------- */
+/* Hide a readout when its toggle is off; the separator makes no sense with one
+ * readout gone, so it hides too. With BOTH off the pill is intentionally blank.
+ * Placed after the layout rules so these beat the per-layout `display` values. */
+#app[data-show-clock="false"] #clock { display: none; }
+#app[data-show-stopwatch="false"] #stopwatch { display: none; }
+#app[data-show-clock="false"] #separator,
+#app[data-show-stopwatch="false"] #separator { display: none; }
+/* the settings-panel live preview mirrors the same visibility */
+#app[data-show-clock="false"] .sp-clock { display: none; }
+#app[data-show-stopwatch="false"] .sp-sw { display: none; }
+#app[data-show-clock="false"] .sp-sep,
+#app[data-show-stopwatch="false"] .sp-sep { display: none; }
+
+/* ---- respect the user's motion preference ------------------------------ */
+@media (prefers-reduced-motion: reduce) {
+  #face, #controls, #grip, #controls button, .option, .tab { transition: none; }
+}
+
+</style>
+</head>
+<body>
+  <!--
+    #app carries the state the CSS keys off:
+      data-env    electron | browser   (hides × + grip in a browser tab)
+      data-status stopped | running | paused
+      data-hover  false | true         (controls fade in on hover)
+      data-theme  dark | light         (set by settings-apply.js)
+  -->
+  <div id="app" data-env="browser" data-status="stopped" data-hover="false" data-theme="dark">
+
+    <!--
+      The draggable face: the two readouts. `.arrange` + #app[data-layout] drive
+      the arrangement (the same mechanism the panel's preview tiles use). The
+      #separator shows a "·" or "–" only for the layouts that want one.
+    -->
+    <div id="face" class="arrange">
+      <div id="clock" class="r-clock">
+        <span id="clock-time">--:--</span>
+        <span id="clock-meridiem">AM</span>
+      </div>
+      <span id="separator" class="r-sep" aria-hidden="true"></span>
+      <div id="stopwatch" class="r-sw">00:00:00</div>
+    </div>
+
+    <!-- Hover-revealed control strip. no-drag so clicks register. -->
+    <div id="controls">
+      <button id="btn-play" type="button" aria-label="Play">&#9654;</button>
+      <button id="btn-pause" type="button" aria-label="Pause">&#9208;</button>
+      <button id="btn-reset" type="button" aria-label="Reset">&#8634;</button>
+      <button id="btn-settings" type="button" aria-label="Settings">&#9881;</button>
+      <button id="btn-quit" type="button" aria-label="Quit">&#215;</button>
+    </div>
+
+    <!-- The tabbed settings panel is built by settings-panel.js and appended
+         here at boot; it overlays the pill when #app[data-settings="open"]. -->
+
+    <!-- Custom resize grip (bottom-right). Electron only; hidden in browser. -->
+    <div id="grip" aria-hidden="true"></div>
+  </div>
+
+  <!-- Shared modules first (dependency order), then renderer glue. -->
+  <script>
+// src/shared/format.js
+// -----------------------------------------------------------------------------
+// Tiny, dependency-free formatting helpers for the two readouts.
+//
+// Why hand-rolled instead of toLocaleTimeString()? Because we want the EXACT
+// same output on macOS, Windows and in a plain browser tab, regardless of the
+// user's locale. Predictable + trivially unit-testable beats "clever."
+//
+// UMD wrapper (see PLAN D2): this file loads as a classic <script> in the
+// renderer (exposing window.EpisodeTimerFormat) AND as a CommonJS module via
+// require() in Electron's main process and in the Playwright unit tests. No
+// bundler, no ES-module import/export.
+// -----------------------------------------------------------------------------
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(); // Node / Electron main / unit tests
+  } else {
+    root.EpisodeTimerFormat = factory(); // browser / renderer global
+  }
+}(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  // Zero-pad a number to at least `width` digits (defaults to 2).
+  // Hours in the stopwatch can go past 99, so we only pad UP to the minimum.
+  function pad(n, width) {
+    var s = String(Math.abs(n));
+    width = width || 2;
+    while (s.length < width) s = '0' + s;
+    return s;
+  }
+
+  // formatClock(date, { hour12, showSeconds }) -> { time, meridiem }
+  //
+  //   hour12:true  -> 12-hour clock, meridiem is 'AM' | 'PM', midnight/noon = 12
+  //   hour12:false -> 24-hour clock ('00'..'23'), meridiem is '' (hidden)
+  //   showSeconds  -> 'HH:MM:SS' instead of 'HH:MM'
+  //
+  // Returns an object so the renderer can drop `time` and `meridiem` into their
+  // own spans (the meridiem is styled smaller, per the PRD).
+  function formatClock(d, opts) {
+    opts = opts || {};
+    // Be bulletproof about the first arg: the renderer ticks on Date.now() (a
+    // number), but callers/tests also pass a real Date. Coerce a number (epoch
+    // ms) to a Date; leave an actual Date alone; anything else -> "now". If we
+    // ever called date.getHours() on a number again, render() would throw and
+    // take the whole tick loop down with it.
+    var date;
+    if (d instanceof Date) date = d;
+    else if (typeof d === 'number' && isFinite(d)) date = new Date(d);
+    else date = new Date();
+
+    // Defaults mirror DEFAULT_CONFIG.settings so callers can pass nothing.
+    var hour12 = opts.hour12 !== false; // default true
+    var showSeconds = opts.showSeconds === true; // default false
+
+    var h = date.getHours(); // 0..23
+    var m = date.getMinutes();
+    var s = date.getSeconds();
+
+    var meridiem = '';
+    var displayHour = h;
+
+    if (hour12) {
+      meridiem = h < 12 ? 'AM' : 'PM';
+      displayHour = h % 12;
+      if (displayHour === 0) displayHour = 12; // 0 and 12 both show as "12"
+    }
+
+    var time = pad(displayHour) + ':' + pad(m);
+    if (showSeconds) time += ':' + pad(s);
+
+    return { time: time, meridiem: meridiem };
+  }
+
+  // formatElapsed(ms) -> 'HH:MM:SS'
+  //
+  // Floors to whole seconds (we tick once a second; no point showing millis).
+  // Hours are NOT capped at 99 — Episode 001's raw take was ~2.5 hours and this
+  // series tempts fate, so three-digit hours render fine.
+  function formatElapsed(ms) {
+    if (typeof ms !== 'number' || !isFinite(ms) || ms < 0) ms = 0;
+    var totalSeconds = Math.floor(ms / 1000);
+    var hours = Math.floor(totalSeconds / 3600);
+    var minutes = Math.floor((totalSeconds % 3600) / 60);
+    var seconds = totalSeconds % 60;
+    return pad(hours) + ':' + pad(minutes) + ':' + pad(seconds);
+  }
+
+  return {
+    pad: pad,
+    formatClock: formatClock,
+    formatElapsed: formatElapsed
+  };
+}));
+
+</script>
+  <script>
+// src/shared/stopwatch.js
+// -----------------------------------------------------------------------------
+// The episode stopwatch state machine. Pure, framework-free, no DOM, no Node.
+//
+// Design (see PLAN §3 + decisions D3/D4/D5/D6):
+//   * State lives in the RENDERER; main only persists what we hand it.
+//   * Elapsed time is ALWAYS computed from an anchor, never accumulated per
+//     tick -> zero setInterval drift. Ticks only drive rendering.
+//       elapsed = accumulatedMs + (running ? now - runningSince : 0)
+//   * Anchor clock = Date.now() (wall-clock epoch). Backward jumps clamp to 0.
+//   * All transitions are pure functions (state, now) -> state. No-ops return
+//     the SAME object (identity), so the UI can skip a re-render/persist.
+//
+// State shape:
+//   { status: 'stopped' | 'running' | 'paused',
+//     accumulatedMs: number,      // time banked from previous running stretches
+//     runningSince: number|null } // anchor of the current stretch (null unless running)
+//
+// UMD wrapper (PLAN D2): classic <script> -> window.EpisodeTimerStopwatch,
+// and require() in Node/Electron/tests.
+// -----------------------------------------------------------------------------
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory();
+  } else {
+    root.EpisodeTimerStopwatch = factory();
+  }
+}(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  // --- construction ----------------------------------------------------------
+
+  function createInitial() {
+    return { status: 'stopped', accumulatedMs: 0, runningSince: null };
+  }
+
+  // "bank" the current running stretch into accumulatedMs.
+  // max(0, ...) clamps backward clock jumps (NTP step, manual change) to 0 ms —
+  // we'd rather under-count by a second than show a negative/absurd value (D5).
+  function bank(state, now) {
+    return state.accumulatedMs + Math.max(0, now - state.runningSince);
+  }
+
+  // --- the elapsed value (the whole point) -----------------------------------
+
+  function elapsedMs(state, now) {
+    if (!state) return 0;
+    if (state.status === 'running') {
+      return state.accumulatedMs + Math.max(0, now - state.runningSince);
+    }
+    return state.accumulatedMs;
+  }
+
+  // --- transitions: pure (state, now) -> state --------------------------------
+  // The truth table lives in PLAN §3.2 / PRD. Each returns the same object on a
+  // no-op so callers can cheaply detect "nothing changed".
+
+  function play(state, now) {
+    // Running -> no-op. Stopped(0), Stopped(value) and Paused all (re)start.
+    if (state.status === 'running') return state;
+    return { status: 'running', accumulatedMs: state.accumulatedMs, runningSince: now };
+  }
+
+  function pause(state, now) {
+    // Only Running can be paused; everything else is a no-op (button disabled).
+    if (state.status !== 'running') return state;
+    return { status: 'paused', accumulatedMs: bank(state, now), runningSince: null };
+  }
+
+  function stop(state, now) {
+    // Running -> bank the value then stop. Paused -> keep the (already banked)
+    // value and stop. Stopped -> no-op. Stop and Pause keep the value; they
+    // differ only in which buttons light up next (and the host's mental model).
+    if (state.status === 'running') {
+      return { status: 'stopped', accumulatedMs: bank(state, now), runningSince: null };
+    }
+    if (state.status === 'paused') {
+      return { status: 'stopped', accumulatedMs: state.accumulatedMs, runningSince: null };
+    }
+    return state; // already stopped
+  }
+
+  function reset(state /*, now */) {
+    // The only destructive action: back to 00:00:00. No-op when already at a
+    // clean stop (Stopped with 0). now is accepted but unused (uniform signature).
+    if (state.status === 'stopped' && state.accumulatedMs === 0) return state;
+    return { status: 'stopped', accumulatedMs: 0, runningSince: null };
+  }
+
+  // --- button-enabled helpers (one source of truth for the UI AND the table) --
+
+  function canPlay(state) { return state.status !== 'running'; }
+  function canPause(state) { return state.status === 'running'; }
+  function canStop(state) { return state.status === 'running' || state.status === 'paused'; }
+  function canReset(state) { return !(state.status === 'stopped' && state.accumulatedMs === 0); }
+
+  // --- persistence ------------------------------------------------------------
+
+  // coerce(obj) -> a clean, type-validated persisted shape WITHOUT applying the
+  // restore-as-paused rule. The rule is STRICT: if ANY field is the wrong type
+  // (e.g. accumulatedMs:'x', a bogus status, a non-numeric runningSince) we bail
+  // to a fresh initial state rather than salvaging the good fields. A corrupt
+  // timer is not worth half-trusting.
+  function coerce(obj) {
+    if (!obj || typeof obj !== 'object') return createInitial();
+
+    var status = obj.status;
+    if (status !== 'stopped' && status !== 'running' && status !== 'paused') {
+      return createInitial();
+    }
+
+    var acc = obj.accumulatedMs;
+    if (typeof acc !== 'number' || !isFinite(acc) || acc < 0) {
+      return createInitial(); // e.g. 'x', NaN, Infinity, negative, missing
+    }
+
+    // runningSince may be null/undefined (no current stretch) or a finite
+    // number (an anchor). Any other type is garbage -> bail.
+    var since = obj.runningSince;
+    var sinceEmpty = (since === null || since === undefined);
+    var sinceNumber = (typeof since === 'number' && isFinite(since));
+    if (!sinceEmpty && !sinceNumber) return createInitial();
+
+    acc = Math.floor(acc);
+
+    if (status === 'running') {
+      // A running timer needs a real anchor. If it has one, keep it running;
+      // if it has none, it comes back frozen (fromPersisted applies D6 anyway),
+      // so demote to paused keeping the banked value — not garbage, just a
+      // running stretch we can't continue.
+      if (sinceNumber) return { status: 'running', accumulatedMs: acc, runningSince: since };
+      return { status: 'paused', accumulatedMs: acc, runningSince: null };
+    }
+
+    // stopped / paused: the anchor is always null.
+    return { status: status, accumulatedMs: acc, runningSince: null };
+  }
+
+  // fromPersisted(obj) -> the state to show at launch.
+  // Applies D6 (restore-as-paused): a timer that was running when we quit comes
+  // back PAUSED at its last saved value; offline time is never back-filled.
+  function fromPersisted(obj) {
+    var s = coerce(obj);
+    if (s.status === 'running') {
+      s = { status: 'paused', accumulatedMs: s.accumulatedMs, runningSince: null };
+    }
+    return s;
+  }
+
+  // toPersisted(state, now) -> a JSON-safe snapshot to write to disk.
+  // We SNAPSHOT the elapsed value into accumulatedMs and drop the anchor, so a
+  // crash/quit while running restores the frozen value (PRD: "never back-fills
+  // closed time"). A running timer serializes as 'paused' — matching the schema
+  // example in PLAN §2.4 — because that is exactly how it will come back.
+  function toPersisted(state, now) {
+    if (typeof now !== 'number') now = Date.now();
+    return {
+      status: state.status === 'running' ? 'paused' : state.status,
+      accumulatedMs: elapsedMs(state, now),
+      runningSince: null
+    };
+  }
+
+  return {
+    createInitial: createInitial,
+    elapsedMs: elapsedMs,
+    play: play,
+    pause: pause,
+    stop: stop,
+    reset: reset,
+    canPlay: canPlay,
+    canPause: canPause,
+    canStop: canStop,
+    canReset: canReset,
+    coerce: coerce,
+    fromPersisted: fromPersisted,
+    toPersisted: toPersisted
+  };
+}));
+
+</script>
+  <script>
+// src/shared/config-schema.js
+// -----------------------------------------------------------------------------
+// The single source of truth for the config file's shape, defaults and
+// validation. Lives in /shared so the Electron main process, the renderer's
+// browser-mode fallback, and the unit tests all agree byte-for-byte (PLAN D14).
+//
+// The golden rule: normalizeConfig(anything) ALWAYS returns a complete, valid
+// config. Missing file, half-written file, hand-edited garbage, an array, a
+// string, null — all collapse to sensible defaults. Never throw, never crash.
+//
+// Depends on stopwatch.fromPersisted() for the `timer` sub-object, so load
+// order matters: stopwatch.js must come before this file in index.html.
+//
+// UMD wrapper (PLAN D2): classic <script> -> window.EpisodeTimerConfigSchema,
+// and require() in Node/Electron/tests.
+// -----------------------------------------------------------------------------
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('./stopwatch'));
+  } else {
+    root.EpisodeTimerConfigSchema = factory(root.EpisodeTimerStopwatch);
+  }
+}(typeof self !== 'undefined' ? self : this, function (stopwatch) {
+  'use strict';
+
+  var SCHEMA_VERSION = 1;
+
+  // --- the click-to-select option catalogs (single source of truth) ----------
+  // The settings panel renders tiles from these exact lists, and normalize*()
+  // validates against them, so the UI and the schema can never drift apart.
+
+  // LAYOUT — how the two readouts are arranged. Driven by #app[data-layout].
+  // 'stack' is the original look (clock stacked over stopwatch).
+  var LAYOUTS = [
+    'stack', // clock over stopwatch (default / original)
+    'stopwatch-top', // stopwatch over clock
+    'clock-left', // clock · stopwatch (row, dot separator + spacing)
+    'side-by-side', // clock  stopwatch (row, no separator)
+    'split', // clock left (big) | stopwatch right (small), spread apart
+    'one-line', // single compact inline row, both small
+    'dash', // clock – stopwatch, vertical with a dash between
+    'clock-hero', // big clock, small stopwatch beneath
+    'stopwatch-hero', // big stopwatch, small clock beneath
+    'centered-gap' // clock over stopwatch with extra breathing room
+  ];
+
+  // FONT — system / web-safe stacks ONLY (no external or CDN fonts, so the
+  // widget stays fully offline/self-contained). Keyword -> CSS stack mapping
+  // lives in settings-apply.js (presentation); this is just the allow-list.
+  var FONTS = [
+    'system', 'mono', 'serif', 'helvetica', 'courier',
+    'times', 'trebuchet', 'verdana', 'palatino', 'condensed'
+  ];
+
+  // BACKGROUND colors (the pill). The existing `opacity` setting still controls
+  // translucency; this is just the base color. First entry is the default
+  // (black -> the original dark pill).
+  var BG_COLORS = [
+    '#000000', '#1a1a2e', '#0f3d3e', '#2d132c', '#1b2a4a',
+    '#3a2d1b', '#2c2c2c', '#004e64', '#f5f5dc', '#ffffff'
+  ];
+
+  // TEXT colors (the numerals + labels). First entry is the default (white).
+  var TEXT_COLORS = [
+    '#ffffff', '#f0f0f0', '#e0e0e0', '#111111', '#f5c518',
+    '#ffd166', '#4ade80', '#60a5fa', '#a78bfa', '#ff6b6b'
+  ];
+
+  // The settings the app reads/applies/persists. Every one is wired end to end
+  // (read + apply + writable over IPC / localStorage); the tabbed panel is the
+  // v2 UI over exactly these keys.
+  var SETTINGS_KEYS = ['layout', 'font', 'bgColor', 'textColor', 'opacity', 'showSeconds', 'hour12', 'alwaysOnTop', 'showClock', 'showStopwatch'];
+
+  // DEFAULT_CONFIG — note window has no x/y on a fresh install; window-state.js
+  // lets the OS pick a sensible first position (and clamps it on later restores).
+  // The settings defaults reproduce the ORIGINAL look (black pill, white text,
+  // stacked layout, system font).
+  var DEFAULT_CONFIG = {
+    schemaVersion: SCHEMA_VERSION,
+    window: { width: 240, height: 130 },
+    timer: { status: 'stopped', accumulatedMs: 0, runningSince: null },
+    settings: {
+      layout: 'stack', // arrangement of the two readouts (see LAYOUTS)
+      font: 'system', // one of FONTS
+      bgColor: '#000000', // pill base color (one of BG_COLORS)
+      textColor: '#ffffff', // numeral/label color (one of TEXT_COLORS)
+      opacity: 1.0, // pill background alpha, 0..1 (solid pill by default; lower in config.json for see-through)
+      showSeconds: false, // wall clock HH:MM:SS instead of HH:MM
+      hour12: true, // false -> 24-hour, meridiem hidden
+      alwaysOnTop: true, // main-side window level
+      showClock: true, // show the wall clock readout (toggled from the tray)
+      showStopwatch: true // show the episode stopwatch readout (toggled from the tray)
+    }
+  };
+
+  // Minimum window size — mirrors BrowserWindow's minWidth/minHeight in main.js.
+  // Lowered so the host can shrink the widget much smaller than before. These
+  // feed BrowserWindow.minWidth/minHeight, the on-screen clamp, and the grip's
+  // resize-by. macOS enforces its own small floor underneath this, which is fine.
+  var MIN_WIDTH = 100;
+  var MIN_HEIGHT = 60;
+
+  function clone(obj) { return JSON.parse(JSON.stringify(obj)); }
+
+  function isFiniteNumber(n) { return typeof n === 'number' && isFinite(n); }
+
+  function isPlainObject(v) {
+    return v !== null && typeof v === 'object' && !Array.isArray(v);
+  }
+
+  // migrate(raw) — bring an older file up to the current shape, or reject one
+  // we can't understand. Today there are no older versions to upgrade, so the
+  // only real work is the guard: a file stamped with an unknown/newer version
+  // (e.g. a v99 config written by a future build, or a bogus number) can't be
+  // interpreted safely, so we discard it and start from defaults.
+  //
+  // A file with NO schemaVersion is treated as current (a pre-versioning or
+  // partial file) and just gets its missing fields filled in downstream.
+  function migrate(raw) {
+    if (!isPlainObject(raw)) return raw;
+    var v = raw.schemaVersion;
+    if (v === undefined || v === null) return raw; // unversioned -> treat as current
+    switch (v) {
+      case SCHEMA_VERSION:
+        return raw; // current — nothing to migrate
+      // case 0: return upgradeV0toV1(raw); /* future older-version upgrades land here */
+      default:
+        // From the future (or just garbage): we don't know its fields. Rather
+        // than keep stale/foreign settings, collapse to a clean default config.
+        return clone(DEFAULT_CONFIG);
+    }
+  }
+
+  // Validate the window sub-object. width/height are always honored (clamped to
+  // the minimum); x/y are only kept if finite (window-state.js does the real
+  // on-screen clamping against live displays).
+  function normalizeWindow(raw) {
+    var def = DEFAULT_CONFIG.window;
+    var out = {};
+    out.width = isFiniteNumber(raw && raw.width) ? Math.max(MIN_WIDTH, Math.round(raw.width)) : def.width;
+    out.height = isFiniteNumber(raw && raw.height) ? Math.max(MIN_HEIGHT, Math.round(raw.height)) : def.height;
+    if (raw && isFiniteNumber(raw.x)) out.x = Math.round(raw.x);
+    if (raw && isFiniteNumber(raw.y)) out.y = Math.round(raw.y);
+    return out;
+  }
+
+  // Pick an enum value if it's in the allow-list, else fall back to default.
+  function pickEnum(value, allowed, fallback) {
+    return allowed.indexOf(value) !== -1 ? value : fallback;
+  }
+
+  // Validate the settings sub-object field-by-field. Unknown keys are dropped
+  // (we only ever copy the SETTINGS_KEYS). Bad values fall back to default.
+  function normalizeSettings(raw) {
+    var def = DEFAULT_CONFIG.settings;
+    raw = isPlainObject(raw) ? raw : {};
+    var out = {};
+
+    // enums: layout / font / colors — unknown value -> default.
+    out.layout = pickEnum(raw.layout, LAYOUTS, def.layout);
+    out.font = pickEnum(raw.font, FONTS, def.font);
+    out.bgColor = pickEnum(raw.bgColor, BG_COLORS, def.bgColor);
+    out.textColor = pickEnum(raw.textColor, TEXT_COLORS, def.textColor);
+
+    // opacity: clamp into [0, 1].
+    if (isFiniteNumber(raw.opacity)) {
+      out.opacity = Math.min(1, Math.max(0, raw.opacity));
+    } else {
+      out.opacity = def.opacity;
+    }
+
+    // the three booleans.
+    out.showSeconds = typeof raw.showSeconds === 'boolean' ? raw.showSeconds : def.showSeconds;
+    out.hour12 = typeof raw.hour12 === 'boolean' ? raw.hour12 : def.hour12;
+    out.alwaysOnTop = typeof raw.alwaysOnTop === 'boolean' ? raw.alwaysOnTop : def.alwaysOnTop;
+    out.showClock = typeof raw.showClock === 'boolean' ? raw.showClock : def.showClock;
+    out.showStopwatch = typeof raw.showStopwatch === 'boolean' ? raw.showStopwatch : def.showStopwatch;
+
+    return out;
+  }
+
+  // normalizeConfig(raw) -> always a complete, valid config object.
+  function normalizeConfig(raw) {
+    raw = migrate(raw);
+    if (!isPlainObject(raw)) raw = {}; // null / 'junk' / [] / undefined -> defaults
+
+    return {
+      schemaVersion: SCHEMA_VERSION, // always stamp the current version
+      window: normalizeWindow(raw.window),
+      timer: stopwatch.fromPersisted(raw.timer), // applies restore-as-paused (D6)
+      settings: normalizeSettings(raw.settings)
+    };
+  }
+
+  // Is a supplied patch value actually valid for its key? (Used to decide which
+  // keys survive a partial patch.) opacity accepts any finite number — it gets
+  // clamped — but a garbage value like '#zzz' for a color is simply dropped so
+  // a misbehaving caller can't silently reset a setting to its default.
+  function patchValueValid(key, value) {
+    switch (key) {
+      case 'layout': return LAYOUTS.indexOf(value) !== -1;
+      case 'font': return FONTS.indexOf(value) !== -1;
+      case 'bgColor': return BG_COLORS.indexOf(value) !== -1;
+      case 'textColor': return TEXT_COLORS.indexOf(value) !== -1;
+      case 'opacity': return isFiniteNumber(value);
+      case 'showSeconds':
+      case 'hour12':
+      case 'alwaysOnTop':
+      case 'showClock':
+      case 'showStopwatch': return typeof value === 'boolean';
+      default: return false; // unknown key
+    }
+  }
+
+  // Validate just a partial settings patch (used by config:set-settings). Only
+  // known keys with VALID supplied values survive; unknown keys and keys whose
+  // value is garbage are dropped (not coerced to default). The surviving values
+  // are normalized (e.g. opacity clamped).
+  function normalizeSettingsPatch(raw) {
+    if (!isPlainObject(raw)) return {};
+    var merged = normalizeSettings(raw);
+    var patch = {};
+    for (var i = 0; i < SETTINGS_KEYS.length; i++) {
+      var k = SETTINGS_KEYS[i];
+      if (Object.prototype.hasOwnProperty.call(raw, k) && patchValueValid(k, raw[k])) {
+        patch[k] = merged[k];
+      }
+    }
+    return patch;
+  }
+
+  return {
+    SCHEMA_VERSION: SCHEMA_VERSION,
+    SETTINGS_KEYS: SETTINGS_KEYS,
+    DEFAULT_CONFIG: DEFAULT_CONFIG,
+    MIN_WIDTH: MIN_WIDTH,
+    MIN_HEIGHT: MIN_HEIGHT,
+    // option catalogs — the panel renders tiles straight from these.
+    LAYOUTS: LAYOUTS,
+    FONTS: FONTS,
+    BG_COLORS: BG_COLORS,
+    TEXT_COLORS: TEXT_COLORS,
+    migrate: migrate,
+    normalizeConfig: normalizeConfig,
+    normalizeSettings: normalizeSettings,
+    normalizeSettingsPatch: normalizeSettingsPatch,
+    clone: clone
+  };
+}));
+
+</script>
+  <script>
+// src/renderer/bridge.js
+// -----------------------------------------------------------------------------
+// One API, two environments. The rest of the renderer (app.js) never touches
+// window.episodeTimer or localStorage directly — it goes through
+// window.EpisodeTimerBridge, which looks identical whether we're running inside
+// Electron or as a plain browser tab (the single-file build).
+//
+//   Electron  -> forwards to the preload's window.episodeTimer (real IPC).
+//   Browser   -> a localStorage-backed fallback using the SAME shared schema,
+//                so persistence behaves the same (minus window bounds, which
+//                are meaningless in a tab). always-on-top / frameless / resize /
+//                quit don't exist in a browser, so those degrade to no-ops and
+//                the renderer hides the affordances.
+//
+// Depends on window.EpisodeTimerConfigSchema (load config-schema.js first).
+// -----------------------------------------------------------------------------
+(function (root) {
+  'use strict';
+
+  var schema = root.EpisodeTimerConfigSchema;
+  var LS_KEY = 'episode-timer.config.v1';
+
+  // --- Electron bridge: thin forwarder over the preload object ---------------
+  function makeElectronBridge(api) {
+    return {
+      env: 'electron',
+      getTimer: function () { return api.getTimer(); },
+      pushTimer: function (t) { api.pushTimer(t); },
+      getSettings: function () { return api.getSettings(); },
+      setSettings: function (partial) { return api.setSettings(partial); },
+      onSettingsChanged: function (cb) { return api.onSettingsChanged(cb); },
+      resizeBy: function (dx, dy) { api.resizeBy(dx, dy); },
+      quit: function () { api.quit(); },
+      setSettingsOpen: function (open) { api.setSettingsOpen(open); },
+      onTimerCommand: function (cb) { return api.onTimerCommand(cb); },
+      onOpenSettings: function (cb) { return api.onOpenSettings(cb); }
+    };
+  }
+
+  // --- Browser bridge: localStorage + the shared normalizer ------------------
+  function makeBrowserBridge() {
+    var listeners = [];
+
+    // Read the whole config blob from localStorage, normalized. Any failure
+    // (no storage, bad JSON, private mode) -> defaults. Never throws.
+    function readBlob() {
+      var raw = null;
+      try { raw = root.localStorage.getItem(LS_KEY); } catch (e) {}
+      var parsed = null;
+      if (raw) { try { parsed = JSON.parse(raw); } catch (e) {} }
+      return schema.normalizeConfig(parsed);
+    }
+
+    function writeBlob(blob) {
+      try { root.localStorage.setItem(LS_KEY, JSON.stringify(blob)); } catch (e) {}
+    }
+
+    return {
+      env: 'browser',
+
+      // Promises everywhere so the two bridges have the exact same async shape.
+      getTimer: function () {
+        return Promise.resolve(readBlob().timer || null);
+      },
+      pushTimer: function (t) {
+        var blob = readBlob();
+        blob.timer = t;
+        blob = schema.normalizeConfig(blob); // keep it honest
+        writeBlob(blob);
+      },
+      getSettings: function () {
+        return Promise.resolve(readBlob().settings);
+      },
+      setSettings: function (partial) {
+        var blob = readBlob();
+        var patch = schema.normalizeSettingsPatch(partial);
+        blob.settings = Object.assign({}, blob.settings, patch);
+        writeBlob(blob);
+        // Fire change listeners, mirroring Electron's settings:changed broadcast.
+        var merged = blob.settings;
+        listeners.forEach(function (cb) { try { cb(merged); } catch (e) {} });
+        return Promise.resolve(merged);
+      },
+      onSettingsChanged: function (cb) {
+        listeners.push(cb);
+        return function () {
+          var i = listeners.indexOf(cb);
+          if (i !== -1) listeners.splice(i, 1);
+        };
+      },
+
+      // No OS window in a tab — these simply do nothing (the panel already
+      // overlays the page in browser mode, so there's nothing to grow).
+      resizeBy: function () {},
+      quit: function () {},
+      setSettingsOpen: function () {},
+      // No tray in a browser tab — these never fire. Return a no-op unsubscribe.
+      onTimerCommand: function () { return function () {}; },
+      onOpenSettings: function () { return function () {}; }
+    };
+  }
+
+  // Pick the environment once, at load.
+  var bridge;
+  if (root.episodeTimer && root.episodeTimer.isElectron) {
+    bridge = makeElectronBridge(root.episodeTimer);
+  } else {
+    bridge = makeBrowserBridge();
+  }
+
+  root.EpisodeTimerBridge = bridge;
+}(typeof self !== 'undefined' ? self : this));
+
+</script>
+  <script>
+// src/renderer/settings-apply.js
+// -----------------------------------------------------------------------------
+// The ONE place that turns the `settings` object into DOM/CSS state. The tabbed
+// settings panel changes settings (over IPC in Electron, localStorage in the
+// browser); the change comes back here and nothing else in the renderer touches
+// settings directly (app.js asks getClockOptions() for hour12/showSeconds).
+//
+// Exposes window.EpisodeTimerSettings { applySettings, getClockOptions,
+// fontFamilyFor } — the panel reuses fontFamilyFor so its swatches render in
+// the exact same stacks the widget will use.
+// -----------------------------------------------------------------------------
+(function (root) {
+  'use strict';
+
+  // Font keyword -> CSS font-family stack. System / web-safe ONLY — no external
+  // or CDN fonts, so the single-file build stays fully offline. Unknown keyword
+  // falls back to the system stack (the schema should never hand us one).
+  var FONT_STACKS = {
+    system: '-apple-system, "SF Pro Display", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif',
+    mono: '"SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+    serif: 'Georgia, "Times New Roman", serif',
+    helvetica: 'Helvetica, Arial, sans-serif',
+    courier: '"Courier New", Courier, monospace',
+    times: '"Times New Roman", Times, serif',
+    trebuchet: '"Trebuchet MS", "Segoe UI", Tahoma, sans-serif',
+    verdana: 'Verdana, Geneva, sans-serif',
+    palatino: '"Palatino Linotype", "Book Antiqua", Palatino, serif',
+    condensed: '"Arial Narrow", "Avenir Next Condensed", "Roboto Condensed", sans-serif'
+  };
+
+  function fontFamilyFor(font) {
+    return FONT_STACKS[font] || FONT_STACKS.system;
+  }
+
+  // '#rrggbb' -> 'r, g, b' so CSS can build rgba(var(--bg-rgb), var(--pill-opacity)).
+  function hexToRgbTriplet(hex) {
+    if (typeof hex !== 'string') return '0, 0, 0';
+    var m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+    if (!m) return '0, 0, 0';
+    var n = parseInt(m[1], 16);
+    var r = (n >> 16) & 255;
+    var g = (n >> 8) & 255;
+    var b = n & 255;
+    return r + ', ' + g + ', ' + b;
+  }
+
+  // Rough perceived luminance (0..255) so we can auto-pick light/dark tinting
+  // for the control buttons against whatever background was chosen.
+  function luminance(hex) {
+    var t = hexToRgbTriplet(hex).split(',').map(function (s) { return parseInt(s, 10); });
+    return 0.2126 * t[0] + 0.7152 * t[1] + 0.0722 * t[2];
+  }
+
+  // Remember the last-applied settings so the tick can ask for clock options
+  // without re-reading the config.
+  var current = null;
+
+  function applySettings(settings, docEl, appEl) {
+    if (!settings) return;
+    docEl = docEl || document.documentElement;
+    appEl = appEl || document.getElementById('app');
+
+    // Pill color + translucency (opacity still owns the alpha) and text color.
+    docEl.style.setProperty('--bg-rgb', hexToRgbTriplet(settings.bgColor));
+    docEl.style.setProperty('--pill-opacity', String(settings.opacity));
+    docEl.style.setProperty('--text-color', settings.textColor);
+
+    // Typeface.
+    docEl.style.setProperty('--font', fontFamilyFor(settings.font));
+
+    if (appEl) {
+      // Arrangement of the two readouts.
+      appEl.setAttribute('data-layout', settings.layout);
+      // data-theme is now DERIVED from the background brightness (not a user
+      // setting) purely so the hover control buttons keep sensible contrast.
+      appEl.setAttribute('data-theme', luminance(settings.bgColor) > 140 ? 'light' : 'dark');
+      // Per-readout visibility (toggled from the tray). CSS hides the readout (and
+      // the separator) when off; with both off the pill is intentionally blank.
+      appEl.setAttribute('data-show-clock', settings.showClock === false ? 'false' : 'true');
+      appEl.setAttribute('data-show-stopwatch', settings.showStopwatch === false ? 'false' : 'true');
+    }
+
+    // hour12/showSeconds aren't CSS — they feed formatClock() on the next tick.
+    current = settings;
+  }
+
+  // What the wall-clock tick needs. Falls back to sensible defaults before the
+  // first applySettings() call.
+  function getClockOptions() {
+    return {
+      hour12: current ? current.hour12 : true,
+      showSeconds: current ? current.showSeconds : false
+    };
+  }
+
+  root.EpisodeTimerSettings = {
+    applySettings: applySettings,
+    getClockOptions: getClockOptions,
+    fontFamilyFor: fontFamilyFor
+  };
+}(typeof self !== 'undefined' ? self : this));
+
+</script>
+  <script>
+// src/renderer/settings-panel.js
+// -----------------------------------------------------------------------------
+// The tabbed, click-to-select settings panel (v2 feature). Builds its own DOM
+// from the shared option catalogs (EpisodeTimerConfigSchema.LAYOUTS/FONTS/
+// BG_COLORS/TEXT_COLORS), so the UI can never drift from what the schema will
+// accept. No text inputs, no named dropdowns — every choice is a clickable
+// visual tile. Works identically in Electron and in the browser single-file
+// build (it only talks to the app via the onSelect callback).
+//
+// Exposes window.EpisodeTimerSettingsPanel.init(...) -> a small controller.
+// Depends on EpisodeTimerConfigSchema (catalogs) and EpisodeTimerSettings
+// (fontFamilyFor, so swatches render in the real stacks). Load after both.
+// -----------------------------------------------------------------------------
+(function (root) {
+  'use strict';
+
+  var schema = root.EpisodeTimerConfigSchema;
+  var settingsMod = root.EpisodeTimerSettings;
+
+  // Human-friendly captions.
+  var FONT_LABELS = {
+    system: 'System', mono: 'Mono', serif: 'Serif', helvetica: 'Helvetica',
+    courier: 'Courier', times: 'Times', trebuchet: 'Trebuchet', verdana: 'Verdana',
+    palatino: 'Palatino', condensed: 'Condensed'
+  };
+  var LAYOUT_LABELS = {
+    'stack': 'Stacked', 'stopwatch-top': 'Timer top', 'clock-left': 'Clock · Timer',
+    'side-by-side': 'Side by side', 'split': 'Split', 'one-line': 'One line',
+    'dash': 'Dash', 'clock-hero': 'Big clock', 'stopwatch-hero': 'Big timer',
+    'centered-gap': 'Roomy'
+  };
+
+  var TABS = [
+    { id: 'layout', label: 'Layout' },
+    { id: 'font', label: 'Font' },
+    { id: 'colors', label: 'Colors' }
+  ];
+  var TAB_IDS = TABS.map(function (t) { return t.id; });
+
+  // Tiny DOM builder. el('button', {id:'x', class:'y', 'data-value':'z'}, [kids|text]).
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    if (attrs) {
+      Object.keys(attrs).forEach(function (k) {
+        if (k === 'text') node.textContent = attrs[k];
+        else if (k === 'html') node.innerHTML = attrs[k];
+        else if (k === 'style') node.setAttribute('style', attrs[k]);
+        else node.setAttribute(k, attrs[k]);
+      });
+    }
+    if (children != null) {
+      (Array.isArray(children) ? children : [children]).forEach(function (c) {
+        if (c == null) return;
+        node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+      });
+    }
+    return node;
+  }
+
+  // One selectable option tile. All options share the same contract:
+  //   <button class="option" data-setting="<key>" data-value="<value>">
+  // "selected" is marked with aria-pressed="true" + the is-selected class.
+  function option(settingKey, value, extraClass, inner) {
+    return el('button', {
+      type: 'button',
+      class: 'option' + (extraClass ? ' ' + extraClass : ''),
+      'data-setting': settingKey,
+      'data-value': value,
+      'aria-pressed': 'false',
+      title: value
+    }, inner);
+  }
+
+  // A mini arrangement preview: two bars (+ an optional separator) laid out by
+  // the same data-layout attribute the real #face uses (CSS handles both).
+  function layoutPreview(layout) {
+    return el('span', { class: 'layout-preview arrange', 'data-layout': layout, 'aria-hidden': 'true' }, [
+      el('i', { class: 'pv pv-clock' }),
+      el('i', { class: 'pv pv-sep', 'aria-hidden': 'true' }),
+      el('i', { class: 'pv pv-sw' })
+    ]);
+  }
+
+  function buildLayoutPanel() {
+    var grid = el('div', { class: 'option-grid grid-5' });
+    schema.LAYOUTS.forEach(function (layout) {
+      grid.appendChild(option('layout', layout, 'option-layout', [
+        layoutPreview(layout),
+        el('span', { class: 'option-caption', text: LAYOUT_LABELS[layout] || layout })
+      ]));
+    });
+    return el('div', { id: 'panel-layout', class: 'tab-panel is-active', role: 'tabpanel', 'aria-labelledby': 'tab-layout' }, grid);
+  }
+
+  function buildFontPanel() {
+    var grid = el('div', { class: 'option-grid grid-5' });
+    schema.FONTS.forEach(function (font) {
+      var swatch = el('span', { class: 'font-swatch', text: '10:42' });
+      swatch.style.fontFamily = settingsMod.fontFamilyFor(font); // live preview
+      grid.appendChild(option('font', font, 'option-font', [
+        swatch,
+        el('span', { class: 'option-caption', text: FONT_LABELS[font] || font })
+      ]));
+    });
+    return el('div', { id: 'panel-font', class: 'tab-panel', role: 'tabpanel', 'aria-labelledby': 'tab-font' }, grid);
+  }
+
+  // A small live clone of the real widget face, shown at the top of the panel.
+  // It carries NO look logic of its own: the pill background/text/font come from
+  // the same :root CSS vars (--bg-rgb/--pill-opacity/--text-color/--font) and
+  // its arrangement is driven by #app[data-layout] (it's a descendant of #app),
+  // so every Layout/Font/Color click updates it the instant the real face would.
+  // app.js writes the live time + stopwatch value into #sp-time/#sp-meridiem/
+  // #sp-stopwatch each tick, so it keeps ticking while the panel is open.
+  function buildPreview() {
+    var time = el('span', { id: 'sp-time', text: '10:42' });
+    var meridiem = el('span', { id: 'sp-meridiem', text: 'AM' });
+    var clock = el('div', { class: 'sp-clock' }, [time, meridiem]);
+    var sep = el('span', { class: 'sp-sep', 'aria-hidden': 'true' });
+    var stopwatch = el('div', { id: 'sp-stopwatch', class: 'sp-sw', text: '00:00:00' });
+    var face = el('div', { class: 'sp-face arrange' }, [clock, sep, stopwatch]);
+    var pill = el('div', { id: 'settings-preview', 'aria-hidden': 'true' }, face);
+    // The checkerboard backdrop sits BEHIND the pill so that lowering the
+    // opacity visibly reveals "desktop" through the translucent pill (the panel
+    // itself is opaque dark, which would otherwise hide the transparency).
+    var backdrop = el('div', { id: 'settings-preview-backdrop' }, pill);
+    return el('div', { class: 'settings-preview-wrap' }, backdrop);
+  }
+
+  function buildColorsPanel() {
+    // BACKGROUND swatches: a solid chip of the color.
+    var bgGrid = el('div', { class: 'option-grid swatch-grid' });
+    schema.BG_COLORS.forEach(function (color) {
+      var chip = option('bgColor', color, 'option-swatch', el('span', { class: 'swatch-chip' }));
+      chip.querySelector('.swatch-chip').style.background = color;
+      bgGrid.appendChild(chip);
+    });
+
+    // TEXT swatches: a sample glyph painted in the color (on a neutral chip).
+    var textGrid = el('div', { class: 'option-grid swatch-grid' });
+    schema.TEXT_COLORS.forEach(function (color) {
+      var chip = option('textColor', color, 'option-swatch', el('span', { class: 'swatch-chip swatch-text', text: 'A' }));
+      chip.querySelector('.swatch-chip').style.color = color;
+      textGrid.appendChild(chip);
+    });
+
+    // OPACITY / transparency: a range slider (not a tile grid — it's a
+    // continuous value). Wired in init(); reflected from settings there too.
+    var slider = el('input', {
+      type: 'range', id: 'opacity-slider', min: '0', max: '1', step: '0.05',
+      'aria-label': 'Transparency', value: '1'
+    });
+    var opacityRow = el('div', { class: 'opacity-row' }, [slider]);
+
+    return el('div', { id: 'panel-colors', class: 'tab-panel', role: 'tabpanel', 'aria-labelledby': 'tab-colors' }, [
+      el('h3', { class: 'settings-section', text: 'Background' }),
+      bgGrid,
+      el('h3', { class: 'settings-section', text: 'Text color' }),
+      textGrid,
+      el('h3', { class: 'settings-section', text: 'Transparency' }),
+      opacityRow
+    ]);
+  }
+
+  // init — build + wire everything. Returns a controller the app uses.
+  //   opts.appEl   : the #app element (panel is appended inside it)
+  //   opts.gearEl  : the ⚙ button that toggles the panel
+  //   opts.onSelect: (settingKey, value) => void  (app persists + applies)
+  function init(opts) {
+    var appEl = opts.appEl;
+    var gearEl = opts.gearEl;
+    var onSelect = opts.onSelect || function () {};
+    var onToggle = opts.onToggle || function () {}; // (open:boolean) -> void
+
+    // --- tabs ---
+    var tabButtons = TABS.map(function (t) {
+      return el('button', {
+        type: 'button',
+        class: 'tab' + (t.id === 'layout' ? ' is-active' : ''),
+        id: 'tab-' + t.id,
+        role: 'tab',
+        'data-tab': t.id,
+        'aria-selected': t.id === 'layout' ? 'true' : 'false',
+        text: t.label
+      });
+    });
+    var tabNav = el('div', { class: 'settings-tabs', role: 'tablist' }, tabButtons);
+
+    // --- header (title + close) ---
+    var closeBtn = el('button', { type: 'button', id: 'settings-close', class: 'settings-close', 'aria-label': 'Close settings', html: '&#215;' });
+    var header = el('div', { class: 'settings-header' }, [
+      el('span', { class: 'settings-title', text: 'Settings' }),
+      closeBtn
+    ]);
+
+    // --- panels ---
+    var panels = el('div', { class: 'settings-body' }, [
+      buildLayoutPanel(),
+      buildFontPanel(),
+      buildColorsPanel()
+    ]);
+
+    // Order (top -> bottom): title+× row, then the live preview, then the tab
+    // nav, then the tab panels.
+    var panel = el('div', { id: 'settings-panel', role: 'dialog', 'aria-label': 'Widget settings' }, [header, buildPreview(), tabNav, panels]);
+    appEl.appendChild(panel);
+
+    // --- open / close (notifies onToggle so main can grow/restore the window) ---
+    function setOpen(open, silent) {
+      appEl.setAttribute('data-settings', open ? 'open' : 'closed');
+      if (!silent) onToggle(open);
+    }
+    function isOpen() { return appEl.getAttribute('data-settings') === 'open'; }
+    function open() { setOpen(true); }
+    function close() { setOpen(false); }
+    function toggle() { setOpen(!isOpen()); }
+    setOpen(false, true); // initial state, silent (don't poke main before any open)
+
+    if (gearEl) gearEl.addEventListener('click', function (e) { e.stopPropagation(); toggle(); });
+    closeBtn.addEventListener('click', close);
+
+    // --- tab switching ---
+    function activateTab(tabId) {
+      tabButtons.forEach(function (b) {
+        var on = b.getAttribute('data-tab') === tabId;
+        b.classList.toggle('is-active', on);
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      TAB_IDS.forEach(function (id) {
+        var p = document.getElementById('panel-' + id);
+        if (p) p.classList.toggle('is-active', id === tabId);
+      });
+    }
+    tabNav.addEventListener('click', function (e) {
+      var tab = e.target.closest ? e.target.closest('.tab') : null;
+      if (tab) activateTab(tab.getAttribute('data-tab'));
+    });
+
+    // --- option selection (event delegation over the whole panel body) ---
+    panels.addEventListener('click', function (e) {
+      var opt = e.target.closest ? e.target.closest('.option') : null;
+      if (!opt) return;
+      var key = opt.getAttribute('data-setting');
+      var value = opt.getAttribute('data-value');
+      markSelectedInGroup(key, value); // snappy optimistic highlight
+      onSelect(key, value);
+    });
+
+    // --- opacity slider (continuous, so not a tile group) ---
+    var opacitySlider = panel.querySelector('#opacity-slider');
+    if (opacitySlider) {
+      opacitySlider.addEventListener('input', function () {
+        onSelect('opacity', Number(opacitySlider.value));
+      });
+    }
+
+    // (Float-on-top lives in the Electron menu-bar tray now, not a tab.)
+
+    // Mark exactly one option as selected within a data-setting group.
+    function markSelectedInGroup(key, value) {
+      var opts = panel.querySelectorAll('.option[data-setting="' + key + '"]');
+      Array.prototype.forEach.call(opts, function (o) {
+        var on = o.getAttribute('data-value') === value;
+        o.classList.toggle('is-selected', on);
+        o.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+    }
+
+    // reflect(settings) — sync every group's highlight + the slider to live settings.
+    function reflect(settings) {
+      if (!settings) return;
+      ['layout', 'font', 'bgColor', 'textColor'].forEach(function (key) {
+        markSelectedInGroup(key, settings[key]);
+      });
+      // Don't fight the user mid-drag: only sync the slider when it isn't focused.
+      if (opacitySlider && document.activeElement !== opacitySlider) {
+        opacitySlider.value = String(settings.opacity);
+      }
+    }
+
+    return { reflect: reflect, open: open, close: close, toggle: toggle, isOpen: isOpen, activateTab: activateTab };
+  }
+
+  root.EpisodeTimerSettingsPanel = { init: init };
+}(typeof self !== 'undefined' ? self : this));
+
+</script>
+  <script>
+// src/renderer/app.js
+// -----------------------------------------------------------------------------
+// The renderer's UI wiring. Pulls together:
+//   * the shared stopwatch state machine + formatters
+//   * the environment bridge (Electron IPC or browser localStorage)
+//   * the settings applier
+// and drives the DOM: the wall clock, the episode stopwatch, the hover controls,
+// the resize grip, persistence pushes, and a small test/debug hook.
+//
+// Globals it relies on (loaded earlier in index.html, in this order):
+//   EpisodeTimerFormat, EpisodeTimerStopwatch, EpisodeTimerConfigSchema,
+//   EpisodeTimerBridge, EpisodeTimerSettings.
+// -----------------------------------------------------------------------------
+(function (root) {
+  'use strict';
+
+  var fmt = root.EpisodeTimerFormat;
+  var sw = root.EpisodeTimerStopwatch;
+  var bridge = root.EpisodeTimerBridge;
+  var settingsMod = root.EpisodeTimerSettings;
+  var panelMod = root.EpisodeTimerSettingsPanel;
+
+  // The settings-panel controller (set up in boot()).
+  var panel = null;
+
+  // --- DOM references (frozen ids, PLAN §2.5) --------------------------------
+  var els = {};
+  function cacheEls() {
+    els.app = document.getElementById('app');
+    els.face = document.getElementById('face');
+    els.clockTime = document.getElementById('clock-time');
+    els.clockMeridiem = document.getElementById('clock-meridiem');
+    els.stopwatch = document.getElementById('stopwatch');
+    els.controls = document.getElementById('controls');
+    els.btnPlay = document.getElementById('btn-play');
+    els.btnPause = document.getElementById('btn-pause');
+    els.btnReset = document.getElementById('btn-reset');
+    els.btnSettings = document.getElementById('btn-settings');
+    els.btnQuit = document.getElementById('btn-quit');
+    els.grip = document.getElementById('grip');
+  }
+
+  // --- stopwatch state (the renderer owns it; main only persists) ------------
+  var state = sw.createInitial();
+  var tickHandle = null;
+
+  // Push the current timer to persistence (snapshotted + JSON-safe).
+  function persistTimer() {
+    bridge.pushTimer(sw.toPersisted(state, Date.now()));
+  }
+
+  // --- rendering --------------------------------------------------------------
+
+  function renderClock(now) {
+    // Pass a real Date (now is an epoch-ms number from Date.now()). formatClock
+    // also coerces defensively, but this keeps the intent obvious.
+    var parts = fmt.formatClock(new Date(now), settingsMod.getClockOptions());
+    els.clockTime.textContent = parts.time;
+    els.clockMeridiem.textContent = parts.meridiem;
+    // Empty meridiem (24-hour mode) is hidden via CSS :empty, but hide it
+    // explicitly too so there's zero chance of a stray gap.
+    els.clockMeridiem.style.display = parts.meridiem ? '' : 'none';
+
+    // Mirror into the settings-panel live preview (present once it's built).
+    if (els.spTime) {
+      els.spTime.textContent = parts.time;
+      els.spMeridiem.textContent = parts.meridiem;
+      els.spMeridiem.style.display = parts.meridiem ? '' : 'none';
+    }
+  }
+
+  function renderStopwatch(now) {
+    var text = fmt.formatElapsed(sw.elapsedMs(state, now));
+    els.stopwatch.textContent = text;
+    if (els.spStopwatch) els.spStopwatch.textContent = text; // live preview
+  }
+
+  function renderButtons() {
+    setDisabled(els.btnPlay, !sw.canPlay(state));
+    setDisabled(els.btnPause, !sw.canPause(state));
+    setDisabled(els.btnReset, !sw.canReset(state));
+  }
+
+  function setDisabled(el, disabled) {
+    if (disabled) el.setAttribute('disabled', '');
+    else el.removeAttribute('disabled');
+  }
+
+  // Full render: clock, stopwatch, status attribute, button states.
+  function render() {
+    var now = Date.now();
+    renderClock(now);
+    renderStopwatch(now);
+    els.app.setAttribute('data-status', state.status);
+    renderButtons();
+    fitFace(); // the text may have changed width (seconds/meridiem/digits) -> refit
+  }
+
+  // --- fit-to-fill ------------------------------------------------------------
+  // The face is sized at a fixed design base (CSS), then scaled here so it FILLS
+  // the pill (minus a small margin), using whichever axis is the binding
+  // constraint. This is what makes a short-wide window show a big wide clock
+  // instead of tiny vmin-collapsed text. offsetWidth/Height report the UNSCALED
+  // layout size (transforms don't affect them), so repeated fits are stable and
+  // there's no feedback loop with the ResizeObserver on #app.
+  var MIN_PAD = 6; // px — text never touches the edges
+  function fitFace() {
+    if (!els.face || !els.app) return;
+    var natW = els.face.offsetWidth;
+    var natH = els.face.offsetHeight;
+    if (!natW || !natH) return;
+    var cw = els.app.clientWidth;
+    var ch = els.app.clientHeight;
+    if (!cw || !ch) return;
+    // ~6% of the smaller dimension, but always at least MIN_PAD px per side.
+    var pad = Math.max(MIN_PAD, Math.round(Math.min(cw, ch) * 0.06));
+    var availW = Math.max(1, cw - pad * 2);
+    var availH = Math.max(1, ch - pad * 2);
+    var scale = Math.min(availW / natW, availH / natH);
+    if (!isFinite(scale) || scale <= 0) return;
+    els.face.style.transform = 'scale(' + scale + ')';
+  }
+
+  // --- the second-aligned tick -----------------------------------------------
+  // Re-arm each tick so minute flips (and HH:MM:SS seconds) land right on the
+  // second boundary rather than drifting. Elapsed is always recomputed from the
+  // anchor, so a late/throttled tick costs display latency only, never drift.
+  function scheduleTick() {
+    if (tickHandle) clearTimeout(tickHandle);
+    var delay = 1000 - (Date.now() % 1000) + 5;
+    tickHandle = setTimeout(function () {
+      render();
+      // While running, keep the saved value fresh (<=1s stale on a hard kill).
+      if (state.status === 'running') persistTimer();
+      scheduleTick();
+    }, delay);
+  }
+
+  // --- transitions (button handlers) -----------------------------------------
+  // Each applies a pure transition; if the state object actually changed we
+  // re-render and persist. No-ops (same object) are cheaply skipped.
+  function applyTransition(next) {
+    if (next === state) return; // identity -> nothing changed
+    state = next;
+    render();
+    persistTimer();
+  }
+
+  function wireButtons() {
+    els.btnPlay.addEventListener('click', function () { applyTransition(sw.play(state, Date.now())); });
+    els.btnPause.addEventListener('click', function () { applyTransition(sw.pause(state, Date.now())); });
+    els.btnReset.addEventListener('click', function () { applyTransition(sw.reset(state, Date.now())); });
+    els.btnQuit.addEventListener('click', function () { bridge.quit(); });
+  }
+
+  // --- hover reveal -----------------------------------------------------------
+  // enter/leave on the document element toggle data-hover; CSS does the fade +
+  // the slight shrink of the readouts. (Known Electron quirk: elements under
+  // -webkit-app-region: drag can swallow mousemove, but enter/leave on the
+  // document still fire in practice. FALLBACK: see PLAN §2.6 — main can poll
+  // screen.getCursorScreenPoint() and send a hover event if this proves flaky.)
+  function wireHover() {
+    var docEl = document.documentElement;
+    docEl.addEventListener('mouseenter', function () { els.app.setAttribute('data-hover', 'true'); });
+    docEl.addEventListener('mouseleave', function () { els.app.setAttribute('data-hover', 'false'); });
+  }
+
+  // --- resize grip ------------------------------------------------------------
+  // Electron only. Because the window moves under the cursor as it grows, client
+  // coordinates are useless — we use screenX/screenY deltas and let main honor
+  // the larger delta against the aspect lock.
+  function wireGrip() {
+    if (bridge.env !== 'electron') return; // hidden in browser mode anyway
+    var dragging = false;
+    var lastX = 0;
+    var lastY = 0;
+
+    els.grip.addEventListener('pointerdown', function (e) {
+      dragging = true;
+      lastX = e.screenX;
+      lastY = e.screenY;
+      try { els.grip.setPointerCapture(e.pointerId); } catch (err) {}
+      e.preventDefault();
+    });
+
+    els.grip.addEventListener('pointermove', function (e) {
+      if (!dragging) return;
+      var dx = e.screenX - lastX;
+      var dy = e.screenY - lastY;
+      lastX = e.screenX;
+      lastY = e.screenY;
+      if (dx || dy) bridge.resizeBy(dx, dy);
+    });
+
+    function endDrag(e) {
+      if (!dragging) return;
+      dragging = false;
+      try { els.grip.releasePointerCapture(e.pointerId); } catch (err) {}
+    }
+    els.grip.addEventListener('pointerup', endDrag);
+    els.grip.addEventListener('pointercancel', endDrag);
+  }
+
+  // --- settings ---------------------------------------------------------------
+  function applyAndRemember(settings) {
+    settingsMod.applySettings(settings, document.documentElement, els.app);
+    if (panel) panel.reflect(settings); // keep the panel's highlights in sync
+    render(); // hour12/showSeconds may have changed -> redraw the clock
+  }
+
+  // Build + wire the tabbed settings panel. A click on any option persists the
+  // single changed key through the SAME settings path (Electron IPC or browser
+  // localStorage); the normalized result comes back and we apply it live.
+  function setupPanel() {
+    if (!panelMod) return; // defensive: panel script failed to load
+    panel = panelMod.init({
+      appEl: els.app,
+      gearEl: els.btnSettings,
+      onSelect: function (key, value) {
+        var patch = {};
+        patch[key] = value;
+        Promise.resolve(bridge.setSettings(patch)).then(function (settings) {
+          applyAndRemember(settings);
+        });
+      },
+      // Let main grow the window for comfortable editing and restore it on close
+      // (Electron only; a no-op in browser mode).
+      onToggle: function (open) {
+        if (bridge.setSettingsOpen) bridge.setSettingsOpen(open);
+      }
+    });
+
+    // The panel built its live-preview clone; cache its spans so render() can
+    // keep them ticking with the real clock + stopwatch values.
+    els.spTime = document.getElementById('sp-time');
+    els.spMeridiem = document.getElementById('sp-meridiem');
+    els.spStopwatch = document.getElementById('sp-stopwatch');
+    render(); // paint the preview immediately with the current values
+  }
+
+  // Tray -> renderer wiring (Electron only; browser bridge no-ops). The tray's
+  // Play/Pause/Reset run through the SAME applyTransition path as the on-pill
+  // buttons (renderer owns the state), and "Settings…" opens the panel.
+  function wireTray() {
+    if (bridge.onTimerCommand) {
+      bridge.onTimerCommand(function (action) {
+        var now = Date.now();
+        if (action === 'play') applyTransition(sw.play(state, now));
+        else if (action === 'pause') applyTransition(sw.pause(state, now));
+        else if (action === 'reset') applyTransition(sw.reset(state, now));
+      });
+    }
+    if (bridge.onOpenSettings) {
+      bridge.onOpenSettings(function () { if (panel) panel.open(); });
+    }
+  }
+
+  // Refit whenever the pill changes size (user drag-resize, grip, settings grow,
+  // display scaling). ResizeObserver is ideal; fall back to window 'resize'.
+  function wireFit() {
+    if (typeof root.ResizeObserver === 'function') {
+      var ro = new root.ResizeObserver(function () { fitFace(); });
+      ro.observe(els.app);
+    } else if (root.addEventListener) {
+      root.addEventListener('resize', fitFace);
+    }
+    fitFace();
+  }
+
+  // --- test / debug hook (read-only), PLAN §2.5 ------------------------------
+  function installDebugHook() {
+    root.__episodeTimer = {
+      getState: function () { return { status: state.status, accumulatedMs: state.accumulatedMs, runningSince: state.runningSince }; },
+      elapsedMs: function () { return sw.elapsedMs(state, Date.now()); },
+      getSettings: function () { return settingsMod.getClockOptions(); },
+      env: bridge.env
+    };
+  }
+
+  // --- boot -------------------------------------------------------------------
+  function boot() {
+    cacheEls();
+
+    // Mark the environment so CSS can hide Electron-only affordances (× + grip)
+    // in browser mode.
+    els.app.setAttribute('data-env', bridge.env);
+
+    wireButtons();
+    wireHover();
+    wireGrip();
+    setupPanel();
+    wireTray();
+    installDebugHook();
+    wireFit();
+
+    // Re-render immediately when the tab/window becomes visible again (a hidden
+    // page may have been throttled; backgroundThrottling:false covers Electron).
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) render();
+    });
+
+    // Load persisted settings + timer, then start ticking.
+    Promise.resolve(bridge.getSettings()).then(function (settings) {
+      applyAndRemember(settings);
+    });
+
+    bridge.onSettingsChanged(function (settings) {
+      applyAndRemember(settings);
+    });
+
+    Promise.resolve(bridge.getTimer()).then(function (persisted) {
+      state = sw.fromPersisted(persisted); // restore-as-paused (D6)
+      render();
+      scheduleTick();
+    });
+
+    // First paint even before the async settings/timer resolve.
+    render();
+    scheduleTick();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+}(typeof self !== 'undefined' ? self : this));
+
+</script>
+</body>
+</html>

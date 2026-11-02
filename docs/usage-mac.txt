@@ -1,0 +1,90 @@
+Overtime (macOS)
+================
+
+A tiny always-on-top desktop widget: the current time, plus how long you've
+been recording. It floats over whatever you're capturing so viewers get to
+watch the minutes burn -- because the "10-minute" screencast always runs long.
+
+Nothing to install. Where it's from:
+  https://github.com/jbaker-code/overtime
+
+
+Launch it
+---------
+1. Unzip this folder (if you haven't already).
+2. Put "Overtime.app" wherever you like (Applications is fine).
+3. Double-click it.
+
+It's unsigned, on purpose. If macOS balks ("unidentified developer"):
+  - Right-click the app -> Open, then confirm.
+  - On macOS 15+ that no longer bypasses Gatekeeper: go to
+    System Settings -> Privacy & Security -> "Open Anyway".
+
+
+It lives in the menu bar (no Dock icon)
+---------------------------------------
+Overtime is an accessory app: it has NO Dock icon and no app-switcher entry.
+Instead it puts a little icon up in the menu bar (top-right of the screen,
+near the system clock/battery -- look for a timer glyph). That's your remote
+control for the widget.
+
+Click the menu-bar icon to bring the widget to the front and open its menu:
+
+  Play / Pause / Reset   drive the stopwatch without hovering the widget
+  Show clock             checkbox: show/hide the wall-clock readout
+  Show stopwatch         checkbox: show/hide the stopwatch readout
+                         (turn both off for a blank pill)
+  Settings...            open the settings panel (brings the widget forward)
+  Show / Bring to Front  raise the widget if it's hidden behind something
+  Float on top           checkbox: keep the widget above everything (on by
+                         default). This is where you toggle always-on-top.
+  Quit                   quit the app
+
+If you ever "lose" the widget behind another window, the menu-bar icon ->
+Show / Bring to Front gets it back.
+
+
+Using it
+--------
+The widget is just the two readouts until you hover it. Hover, and a little
+control strip fades in over the pill:
+
+  |>  Play      start the stopwatch (or resume a paused one)
+  ||  Pause     freeze it, keep the value; Play resumes
+  <-  Reset     back to 00:00:00
+  (*) Settings  open the panel to change the look (gear icon)
+  x   Quit      closes the app
+
+(There's no separate Stop button -- Pause already halts the stopwatch and
+keeps the value on screen.)
+
+  - Drag anywhere on the pill to move the widget around.
+  - Resize it freely by dragging any edge or corner (or the little grip in
+    the bottom-right). No locked shape -- the two readouts scale to fill
+    whatever size you give it, down to a 100x60 minimum.
+  - It remembers its position, size, and the stopwatch value between launches.
+  - Cmd+Q also quits when the widget is focused (so does the menu bar's Quit).
+
+Change the look: click the gear (*) in the hover controls to open the
+settings panel -- tabs for Layout, Font, and Colors, all click-to-select.
+The Colors tab also has a transparency slider (the pill is solid by default;
+slide it down to see through to whatever's behind it). Your choices save
+instantly. The window grows while the panel is open so there's room to work,
+and shrinks back to your widget size when you close it.
+
+A couple of extras -- 12/24-hour time and showing seconds -- don't have panel
+tiles yet; set those by editing the config file:
+  ~/Library/Application Support/Overtime/config.json
+(Always-on-top lives in the menu-bar menu as "Float on top.") The config file
+is safe to delete; the app just starts fresh.
+
+
+Recording it in OBS
+-------------------
+Use Display Capture (or add the widget as its own Window Capture source). A
+Window Capture of the app you're recording won't include this overlay.
+
+
+-------------------------------------------------------------------------------
+Overtime -- https://github.com/jbaker-code/overtime
+MIT License. Authored by Claude (Anthropic); ideas & direction by Jason Baker.

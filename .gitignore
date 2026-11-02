@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Logs / cruft
+*.log
+.DS_Store
+
+# Playwright test output
+test-results/
+playwright-report/
+
+# Per-build output (dated, accumulates) — scratch for the unpacked .app stays in
+# the OS temp dir; only finished plain files land under tmp/. Never committed.
+tmp/
+
+# NOTE: the shippable binaries live in releases/ and ARE committed on purpose, so
+# people can download the repo and run one straight from a zip. (releases/ is NOT ignored.)
