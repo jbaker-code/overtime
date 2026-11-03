@@ -40,7 +40,7 @@ Build commands (outputs land in a dated `tmp/overtime-build-…/dist/` folder):
 | `npm test` | the Playwright suite (unit + single-file in headless Chromium + the real Electron app) |
 | `npm run clean` | wipe the build temp + scratch |
 
-Architecture, the build pipeline, and how it's all wired live in **[docs/GUIDE.md](docs/GUIDE.md)** and **[ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+Architecture, the build pipeline, and how it's all wired live in **[docs/GUIDE.md](docs/GUIDE.md)** and **[ARCHITECTURE.md](docs/ARCHITECTURE.md)**; the rationale behind every non-obvious engineering choice (the cutout canvas, the cursor-poll hover, the separate settings window…) is in **[docs/dev/TECHNICAL.md](docs/dev/TECHNICAL.md)**.
 
 ---
 
@@ -49,7 +49,7 @@ Architecture, the build pipeline, and how it's all wired live in **[docs/GUIDE.m
 - **Wall clock** (`HH:MM` + AM/PM, or 24-hour) and an **episode stopwatch** (`HH:MM:SS`) with Play / Pause / Reset.
 - **Always-on-top, frameless, transparent** — a rounded pill that floats over your recording and is captured fine by OBS.
 - **Hover for controls**, drag anywhere to move, resize freely — the readouts scale to fill whatever size you pick.
-- **Make it yours**: 10 layouts × 10 fonts × 10 background/text colors, an opacity slider, and tray toggles to show/hide either readout (turn both off for a blank pill). It remembers everything between launches.
+- **Make it yours**: 10 layouts, 9 curated fonts *plus* a system-font browser (pick any font installed on your machine), and background/text colors from 9 quick-pick swatches each *or* any color you like via the built-in color picker. Two opacity sliders (pill and text), a **Cutout** mode that punches the numerals clean through the pill to your desktop, and tray toggles to show/hide either readout (turn both off for a blank pill). It remembers everything between launches.
 
 ---
 

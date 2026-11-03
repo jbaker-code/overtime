@@ -312,3 +312,37 @@ headline changes:
   itself **"Overtime"** in Activity Monitor. Docs squared up (key-count → 16, dead links
   repointed, this Round-2 log). Then **all five release artifacts were rebuilt** and staged into
   `tmp/releases/`.
+
+## ✅ Round 2.1 — settings-panel polish (Pass N, builder-then-adversary)
+
+A small follow-on train after Round 2, same workflow (builder subagent → adversarial verifier),
+plus a capstone **documenter pass** (PRD addendum, a new `TECHNICAL.md`, a root `CLAUDE.md`,
+README/GUIDE corrections).
+
+- **Visible resize grip on the settings window.** The grip *element* had existed since Pass H
+  but was effectively **invisible**: the settings-panel background is always near-black, yet the
+  settings window derives its `data-theme` from the user's **pill** color — so a light pill
+  flipped `#settings-grip` to a `data-theme="light"` **black** hatch painted on the near-black
+  panel (≈1:1 contrast → gone). Fixed by **removing the theme-flip override** (the grip is now
+  always light stripes) and making the hatch **bolder** (alpha 0.55 → 0.8, 2px stripes, box
+  26 → 30px); added a regression test so the flip can't return.
+  - 🐞 **Adversary catch:** the builder's first answer was "already present, no change needed" —
+    which missed the user's actual *"I can't see it"* intent. The real defect was **contrast**,
+    not existence. Caught, root-caused, and fixed.
+- **Preview border → opaque gray.** The `#settings-preview` outline was semi-transparent
+  `rgba(128,128,128,0.5)`, so it read as see-through over the preview's checkerboard backing.
+  Now a solid, fully opaque **`#808080`**.
+- **Styled settings scrollbar.** When the settings window is small enough to scroll, the
+  scrollbar now has a **black track + gray thumb**, scoped to `#settings-panel` descendants so it
+  can never paint a black track on the transparent pill (proven by a selector-scope test).
+
+## 📚 Documentation (Pass O)
+
+- Added **`docs/dev/TECHNICAL.md`** — the "why" behind the non-obvious engineering (canvas
+  cutout knockout, main-process hover poll, the live settings window, the config model, fit-to-
+  fill, the system-font browser, build/test internals, a gotchas section, and the frozen
+  identifiers) — so a future engineer/AI doesn't rip something out thinking it's needless.
+- Added a root **`CLAUDE.md`** (house rules + repo map for future AI sessions), a dated
+  **"Current state" addendum** to the frozen `PRD.md`, and corrected stale bits in `GUIDE.md`
+  (removed `courier`, old swatch hexes, the grow-the-window line) and `README.md` (the real
+  10 layouts / 9 fonts / 9+9 swatches + any-hex picker + Cutout).

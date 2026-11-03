@@ -274,40 +274,40 @@ html, body {
 }
 
 /* ---- the SETTINGS WINDOW's resize grip --------------------------------- */
-/* Same diagonal-hatch look as the pill's #grip, but for the separate settings
- * window (settings.html). The window's rounded, frameless corners are hard to
- * grab, so this corner handle is ALWAYS visible (not hover-gated) and sits ABOVE
- * the settings panel (#settings-panel is z-index:10). Fixed px sizing keeps it a
+/* Diagonal-hatch like the pill's #grip (settings.html), but BOLDER and
+ * THEME-INDEPENDENT. The window's rounded, frameless corners are hard to grab,
+ * so this corner handle is ALWAYS visible (not hover-gated) and sits ABOVE the
+ * settings panel (#settings-panel is z-index:10). Fixed px sizing keeps it a
  * sensible target in the large editing window rather than scaling to a giant
- * vmin block. settings-window.js wires it to bridge.resizeBy (screen-delta). */
+ * vmin block. settings-window.js wires it to bridge.resizeBy (screen-delta).
+ *
+ * IMPORTANT — do NOT add a data-theme="light" variant the way the pill's #grip
+ * has. The pill flips its grip tone because the pill background follows the
+ * theme; the SETTINGS PANEL background does NOT — it is always near-black
+ * (#settings-panel: rgba(18,18,22,.98), no light override). The settings window
+ * derives data-theme from the user's PILL color (settings-apply.js), so a light
+ * pill would flip this grip to black-on-near-black and it would VANISH (the bug
+ * that made it look like there was no grip at all). Always-light stripes, fairly
+ * opaque and thick, so it reads as an obvious grip on the near-black panel. */
 #settings-grip {
   position: absolute;
   right: 0;
   bottom: 0;
-  width: 26px;
-  height: 26px;
+  width: 30px;
+  height: 30px;
   z-index: 30;                 /* above the panel (z-index:10) */
   cursor: nwse-resize;
   -webkit-app-region: no-drag; /* grabbable for resize, not window drag */
   background-image: repeating-linear-gradient(
     -45deg,
     transparent 0,
-    transparent 4px,
-    rgba(255, 255, 255, 0.55) 4px,
-    rgba(255, 255, 255, 0.55) 5px
+    transparent 2px,
+    rgba(255, 255, 255, 0.8) 2px,
+    rgba(255, 255, 255, 0.8) 4px
   );
   -webkit-mask-image: linear-gradient(-45deg, #000 0 55%, transparent 55%);
   mask-image: linear-gradient(-45deg, #000 0 55%, transparent 55%);
   border-bottom-right-radius: 6vmin;
-}
-#app[data-theme="light"] #settings-grip {
-  background-image: repeating-linear-gradient(
-    -45deg,
-    transparent 0,
-    transparent 4px,
-    rgba(0, 0, 0, 0.5) 4px,
-    rgba(0, 0, 0, 0.5) 5px
-  );
 }
 
 /* ---- on-pill controls — BROWSER MODE ONLY ------------------------------ */
@@ -415,6 +415,29 @@ html, body {
 }
 
 #app[data-settings="open"] #settings-panel { display: flex; }
+
+/* ---- styled scrollbar — SETTINGS PANEL ONLY (black track, gray thumb) ------ */
+/* The settings panel's scroll regions (.settings-body, .fb-grid, .cp-body) get a styled
+ * webkit scrollbar instead of the default OS one when the window is small enough to need
+ * scrolling: a black track/gutter (blends into the panel's near-black surface) with a
+ * mid-gray draggable thumb.
+ *
+ * SCOPE: these rules are keyed to `#settings-panel <descendant>`, so they ONLY paint the
+ * scrollbars of elements INSIDE the settings panel. They are deliberately NOT a global
+ * `::-webkit-scrollbar` rule, which would leak a black track onto the pill window and the
+ * browser single-file pill. The pill itself never scrolls (html/body/#app are all
+ * overflow:hidden), so it shows no scrollbar at all; and #settings-panel is the shared
+ * container for BOTH the Electron settings window and the browser in-page panel, so the
+ * styled scrollbar is consistent across both — but never touches the bare pill surface. */
+#settings-panel ::-webkit-scrollbar { width: 10px; height: 10px; }
+#settings-panel ::-webkit-scrollbar-track { background: #000; }
+#settings-panel ::-webkit-scrollbar-thumb {
+  background: #808080;         /* gray thumb */
+  border-radius: 6px;
+}
+#settings-panel ::-webkit-scrollbar-thumb:hover { background: #9a9a9a; } /* slightly lighter on grab */
+/* Standards fallback (inherited by the scroll descendants): gray thumb on a black track. */
+#settings-panel { scrollbar-width: thin; scrollbar-color: #808080 #000; }
 
 .settings-header {
   display: flex;
@@ -826,7 +849,12 @@ html, body {
    * corner seam. background-clip:padding-box (below) keeps the translucent fill tucked
    * INSIDE this border, so there's no fill/border seam. (An `outline` would be clipped
    * by the checkerboard backdrop's overflow:hidden, so a border is the clean choice.) */
-  border: 1px solid rgba(128, 128, 128, 0.5);
+  /* Fully-OPAQUE mid-gray (#808080 = rgb(128,128,128), the true halfway neutral). The old
+   * half-alpha gray (alpha 0.5) went see-through where it crossed the preview's checkerboard
+   * transparency backing, reading as a faint/broken line instead of a crisp bound. Solid
+   * #808080 draws a clean, consistent 1px edge over both the dark panel and the checkerboard
+   * (same rule, so it applies in BOTH the Electron settings window and the browser panel). */
+  border: 1px solid #808080;
   background: rgba(var(--bg-rgb), var(--pill-opacity));
   /* Clip the background to the padding box so the translucent fill can't bleed a
    * sub-pixel seam past the rounded corners (#4). */

@@ -167,6 +167,75 @@ test.describe('static source assertions', () => {
     expect(css).toMatch(/\.option-custom\b/);
   });
 
+  test('settings window: the bottom-right resize grip is present and styled like the pill grip', () => {
+    // Item 1: the Electron settings window (settings.html) carries a VISIBLE bottom-right
+    // resize grip, drawn with the SAME diagonal-hatch language as the pill's #grip (a
+    // repeating-linear-gradient + a corner mask), reused rather than reinvented so the two
+    // affordances read identically.
+    const html = read('source/app/renderer/settings.html');
+    expect(html, '#settings-grip element').toMatch(/id\s*=\s*["']settings-grip["']/);
+    const css = read('source/app/renderer/styles.css');
+    // the pill grip the settings grip must match: hatched via a repeating-linear-gradient
+    expect(css).toMatch(/#grip\s*\{[^}]*repeating-linear-gradient/);
+    // the settings grip reuses that same hatch pattern + a corner mask, pinned bottom-right
+    const sg = css.match(/#settings-grip\s*\{[^}]*\}/);
+    expect(sg, '#settings-grip rule').not.toBeNull();
+    expect(sg[0]).toMatch(/repeating-linear-gradient/);
+    expect(sg[0]).toMatch(/mask-image/);
+    expect(sg[0]).toMatch(/right:\s*0/);
+    expect(sg[0]).toMatch(/bottom:\s*0/);
+    // it sits ABOVE the panel (z-index:10) so the corner stays grabbable
+    expect(sg[0]).toMatch(/z-index:\s*(1[0-9]|[2-9][0-9]|[1-9]\d{2,})/);
+    // REGRESSION GUARD (the bug the user actually hit): the grip must stay LIGHT + fairly
+    // opaque and must NOT flip to dark stripes under a light theme. The settings panel bg is
+    // always near-black, but the settings window derives data-theme from the PILL color — so a
+    // data-theme="light" #settings-grip override would paint black-on-near-black and vanish.
+    expect(sg[0], 'grip stripes must be opaque-ish white, not faint')
+      .toMatch(/rgba\(\s*255\s*,\s*255\s*,\s*255\s*,\s*(0?\.[6-9]\d*|1(\.0+)?)\s*\)|#fff\b/i);
+    expect(css, 'no data-theme=light override that would hide the settings grip on a light pill')
+      .not.toMatch(/\[data-theme\s*=\s*["']light["']\]\s*#settings-grip/);
+    // the grip belongs to the settings WINDOW, not the browser in-page panel: index.html
+    // (the pill / single-file build) must NOT carry a #settings-grip.
+    expect(read('source/app/renderer/index.html')).not.toMatch(/id\s*=\s*["']settings-grip["']/);
+  });
+
+  test('settings preview border is a SOLID, fully-opaque #808080 (not semi-transparent)', () => {
+    // Item 2: the #settings-preview outline border is an opaque mid-gray so it reads as a
+    // crisp line even where it crosses the preview's checkerboard transparency backing.
+    const css = read('source/app/renderer/styles.css');
+    const rule = css.match(/#settings-preview\s*\{[^}]*\}/);
+    expect(rule, '#settings-preview rule').not.toBeNull();
+    // 1px solid #808080 (= rgb(128,128,128), alpha 1) — color/alpha changed, width/style kept.
+    expect(rule[0]).toMatch(/border:\s*1px\s+solid\s+#808080\b/i);
+    // the old semi-transparent gray must be gone from the preview border
+    expect(rule[0]).not.toMatch(/rgba\(\s*128\s*,\s*128\s*,\s*128\s*,\s*0?\.5\s*\)/);
+  });
+
+  test('settings scrollbar is styled (black track / gray thumb) and SCOPED to the panel — never the pill', () => {
+    // Item 3: the settings panel's scroll regions get a styled webkit scrollbar. It MUST be
+    // scoped to #settings-panel descendants so it never paints a black track on the pill
+    // window or the browser single-file pill (which never scroll — html/body/#app are all
+    // overflow:hidden anyway).
+    const css = read('source/app/renderer/styles.css');
+    // the scope-prefixed rules exist: a sized bar, a black track, a gray thumb
+    expect(css).toMatch(/#settings-panel\s+::-webkit-scrollbar\s*\{[^}]*width:/);
+    expect(css).toMatch(/#settings-panel\s+::-webkit-scrollbar-track\s*\{[^}]*background:\s*#000\b/);
+    expect(css).toMatch(/#settings-panel\s+::-webkit-scrollbar-thumb\s*\{[^}]*background:\s*#808080\b/);
+    // standards fallback, also scoped to the panel
+    expect(css).toMatch(/#settings-panel\s*\{[^}]*scrollbar-color:\s*#808080\s+#000\b/);
+    // CRITICAL: no BARE/global ::-webkit-scrollbar rule — that would leak the black track onto
+    // the pill. Every ::-webkit-scrollbar* rule in the file must be prefixed with #settings-panel.
+    const bars = [...css.matchAll(/(^|[\s,{}])(::-webkit-scrollbar[\w-]*)/g)];
+    for (const m of bars) {
+      // find the start of this selector's rule and ensure #settings-panel precedes the pseudo
+      const at = m.index;
+      const selStart = css.lastIndexOf('}', at);
+      const selText = css.slice(selStart + 1, at + m[0].length);
+      expect(selText, `unscoped scrollbar selector near: ${selText.trim().slice(-60)}`)
+        .toMatch(/#settings-panel/);
+    }
+  });
+
   test('package.json wiring: test script runs playwright, main points at the Electron entry', () => {
     // After the Pass-L reorg, the Electron entry lives at source/electron/main.js and the
     // Playwright config moved into tests/, so `npm test` passes --config explicitly.

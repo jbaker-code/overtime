@@ -230,3 +230,79 @@ what this PRD scoped — a system-font browser (`queryLocalFonts`) with a `custo
 in Electron, and (in progress) a **separate live-updating settings window**. This PRD is
 *not* kept current for that work — **`docs/dev/HISTORY.md` and `docs/dev/DECISIONS.md`
 are the source of truth** for everything after extraction.
+
+---
+
+## Current state (as of Round 2 + Pass N) — supersedes the stale sections above
+
+> **This addendum is the authoritative snapshot of the shipped app.** It was written after
+> Round 1, Round 2 and the Pass-N polish, and it **supersedes** the two older "Current state
+> (as built)" / "Beyond this spec" sections above wherever they conflict (those predate the
+> separate settings window, the recut palettes, the color picker, and Cutout). For the full
+> story see `HISTORY.md`; for durable decisions `DECISIONS.md`; for the engineering rationale
+> `TECHNICAL.md`; for how it's wired `../ARCHITECTURE.md`. **Verified against the source.**
+
+**Core.** Wall clock (`HH:MM` + small AM/PM, or 24-hour with the meridiem hidden) + an
+episode stopwatch (`HH:MM:SS`) with **Play / Pause / Reset**. No Stop button (Pause covers
+"halt and keep the value"; `sw.stop()` stays unwired in the state machine). The pill is
+**frameless, transparent, always-on-top, free-resize** (no aspect lock); readouts **scale to
+fill** the window down to **100×20** (min width 100, min **height 20** — a one-line strip;
+was 60). Content protection stays **off** (OBS must capture it).
+
+**Controls by environment.** *Electron:* no on-pill control icons — driven entirely by a
+**menu-bar tray** (no Dock; accessory app) **and** a native **right-click context menu** that
+shares one template with the tray: *Start / Pause / Reset Stopwatch · ✓ Show clock · ✓ Show
+stopwatch · Settings… · Show / Bring to Front · ✓ Float on top · Quit*. Hover paints the
+whole pill 50% black as a grab affordance, driven by a **main-process cursor poll** (the
+frameless drag region swallows DOM `mouseenter`/`mouseleave`). *Browser/single-file:*
+on-pill **Play / Pause / Reset / Settings** buttons (no Quit), gated on `data-env="browser"`;
+hover uses the DOM path.
+
+**The separate live settings window (Electron).** Settings is now its **own frameless
+`BrowserWindow` beside the pill** — it no longer grows the pill (the old
+`growForSettings`/`restoreFromSettings`/`window:settings-open` round-trip is gone). The real
+pill stays small over the wallpaper and updates **live** as you edit (`settings:changed`
+broadcasts to **both** windows). It's resizable (bottom-right grip → `window:resize-by`, main
+resolving the sender window), and its position+size persist under a `settingsWindow` bounds
+key (~1262×975 default, clamped to the work area). The **browser/single-file** build keeps the
+in-page overlay panel.
+
+**Settings panel — Layout / Font / Colors tabs:**
+- **Layout:** **10** arrangements (`stack`, `stopwatch-top`, `clock-left`, `side-by-side`,
+  `split`, `one-line`, `dash`, `clock-hero`, `stopwatch-hero`, `centered-gap`).
+- **Font:** **9** curated web-safe stacks (`system, mono, serif, helvetica, times, trebuchet,
+  verdana, palatino, condensed` — `courier` was dropped) **plus a system-font browser**
+  (`queryLocalFonts`, `local-fonts` permission) to pick any installed family. The active font
+  = a remembered `customFont` when `useCustomFont` is on **and** it's actually installed
+  (checked at apply time, fallback to the curated face), else the curated `font`.
+- **Colors:** **9** background + **9** text **preset swatches**, *plus* a **dependency-free
+  custom color picker** (hue ring + saturation/value square + hex) — `bgColor`/`textColor`
+  now accept **any valid `#rrggbb`**, not just the swatches; `customBgColor`/`customTextColor`
+  remember the last picked hex. **Two opacity sliders** (background `opacity` and text
+  `textOpacity`, each reaching 0). A **Cutout** checkbox: the numerals become **holes punched
+  through the opaque pill to the desktop** (a `<canvas>` `destination-out` knockout — text
+  color ignored; `textOpacity` becomes the cutout strength).
+
+**Settings schema — `SETTINGS_KEYS` is 16** (was 14): `layout, font, customFont, useCustomFont,
+bgColor, textColor, customBgColor, customTextColor, opacity, textOpacity, cutout, showSeconds,
+hour12, alwaysOnTop, showClock, showStopwatch`. No `theme` key (`data-theme` is derived from
+`bgColor` luminance). `showClock`/`showStopwatch` toggle each readout from the tray (both off =
+a blank pill). `hour12`/`showSeconds` have no panel tile yet (config-file only); `alwaysOnTop`
+is the tray's "Float on top".
+
+**Persistence.** Window bounds (pill `window` + the new `settingsWindow`), the stopwatch value
+(restore-as-paused), and the full `settings` object — one atomic JSON file in `userData`,
+corrupt-safe, clamped on-screen on restore. Browser mode mirrors it in
+`localStorage['episode-timer.config.v1']`.
+
+**Build & distribution.** Unchanged in intent: **no installers, unsigned**, mac arm64+x64
+zips + a cross-built Windows `win-unpacked` zip + a single-file HTML + a source zip, into a
+dated **`tmp/overtime-build-<slug>/dist/`** (gitignored). The published binaries live in the
+separate **`overtime-releases`** repo (GitHub's 100 MB-per-file limit). The tray PNG is
+deliberately **not** packaged (the `⏱` title fallback); process naming via
+`productName` (packaged) / `app.setName` + `process.title` (dev).
+
+*Clauses in the earlier sections now superseded:* the "~10-option catalogs" and "10 fonts /
+10 colors" counts (now 10 layouts / 9 fonts / 9+9 swatches + any-hex picker); "Settings grows
+the window ~720×620 and restores on close" (now a separate window); the 14-key schema that
+predated `customBgColor`/`customTextColor` (now 16 keys); and min height 60 (now 20).

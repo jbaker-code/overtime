@@ -21,7 +21,7 @@ YouTube series, then set loose as its own little app.
         │        00:37:12           │   ← recording stopwatch (HH:MM:SS)
         │                           │
         ╰───────────────────────────╯
-           (hover to reveal:  ▶  ⏸  ↺  ⚙  × )
+           (hover to reveal:  ▶  ⏸  ↺  ⚙ )
 ```
 
 > **A note on naming.** Overtime grew up as a project called *Episode Timer*, so a
@@ -63,13 +63,13 @@ control strip fades in over the pill:
   — you can't fat-finger it mid-record.
 - **⚙ Settings** — opens the tabbed settings panel (Layout / Font / Colors). Click a
   tile to change the look; see below.
-- **×** — quit. The Dock icon is hidden (see "On macOS" below), so this is one way
-  out; the menu-bar/tray **Quit** and Cmd/Ctrl+Q (when the widget is focused) also work.
+- **Quit** — there's no quit button on the pill; use the menu-bar/tray **Quit** or
+  Cmd/Ctrl+Q (when the widget is focused). The Dock icon is hidden (see "On macOS" below).
 
 **Move it:** drag anywhere on the pill (or the settings panel's title bar). **Resize
 it:** drag any edge or corner — or the little grip in the bottom-right. Free resize,
 no locked aspect ratio; the two readouts scale to fill whatever shape you give it, down
-to a **100×60** minimum. It remembers its position and size between launches, and it'll
+to a **100×20** minimum. It remembers its position and size between launches, and it'll
 never reopen off-screen even if you unplug a monitor.
 
 Pause and Reset are the whole story: Pause halts and keeps the value frozen, Reset
@@ -98,10 +98,13 @@ color. The **Colors** tab also has a **transparency slider** (the pill is solid 
 default — slide it down to see through to whatever's behind it). Every change applies
 live and is saved immediately. This is the primary way to change the look and feel.
 
-Opening Settings **grows the window** to a comfortable editing size (~720×620) and
-**restores your real widget size when you close it** (the grown size is never saved).
-The panel shows a ~3× live preview of the pill on a checkerboard backdrop, so lowering
-the opacity actually reads as see-through.
+In **Electron**, Settings opens in its **own separate window** beside the pill (it used to
+grow the pill's window; that's gone). The pill stays small over your wallpaper and updates
+**live** as you edit, so you can judge a color, opacity, or Cutout against your actual
+background. That window is resizable (drag the bottom-right grip) and remembers its own
+position and size. In the **browser / single-file** build there's no second window, so the
+panel overlays the page instead. Either way the panel shows a ~3× live preview of the pill on
+a checkerboard backdrop, so lowering the opacity actually reads as see-through.
 
 Under the hood, settings live in `config.json` — the panel just clicks values into that
 same store so you don't have to hand-edit it. The file remains the on-disk source of
@@ -122,10 +125,14 @@ object with these knobs:
 | Key | Type / allowed | Default | What it does | Panel tab |
 |-----|----------------|---------|--------------|-----------|
 | `layout` | one of `stack`, `stopwatch-top`, `clock-left`, `side-by-side`, `split`, `one-line`, `dash`, `clock-hero`, `stopwatch-hero`, `centered-gap` | `"stack"` | How the two readouts are arranged. `stack` is the original clock-over-stopwatch look. | Layout |
-| `font` | one of `system`, `mono`, `serif`, `helvetica`, `courier`, `times`, `trebuchet`, `verdana`, `palatino`, `condensed` | `"system"` | Typeface. System / web-safe stacks only — no external or CDN fonts, so it stays fully offline. | Font |
-| `bgColor` | one of 10 hex swatches (`#000000`, `#1a1a2e`, `#0f3d3e`, `#2d132c`, `#1b2a4a`, `#3a2d1b`, `#2c2c2c`, `#004e64`, `#f5f5dc`, `#ffffff`) | `"#000000"` | Pill base color. `opacity` still controls the translucency on top of it. | Colors |
-| `textColor` | one of 10 hex swatches (`#ffffff`, `#f0f0f0`, `#e0e0e0`, `#111111`, `#f5c518`, `#ffd166`, `#4ade80`, `#60a5fa`, `#a78bfa`, `#ff6b6b`) | `"#ffffff"` | Color of the numerals and labels. | Colors |
+| `font` | one of 9 curated keywords: `system`, `mono`, `serif`, `helvetica`, `times`, `trebuchet`, `verdana`, `palatino`, `condensed` | `"system"` | The curated typeface. System / web-safe stacks only — no external or CDN fonts, so it stays fully offline. | Font |
+| `customFont` / `useCustomFont` | a system font family name (or `""`) + a boolean | `""` / `false` | An **installed font** picked via the Font tab's system-font browser. Active only when `useCustomFont` is on *and* the family is installed (else it falls back to the curated `font`). | Font |
+| `bgColor` | **any** valid `#rrggbb` (9 quick-pick swatches: `#000000`, `#1a1a2e`, `#0f3d3e`, `#2d132c`, `#1b2a4a`, `#3a2d1b`, `#2c2c2c`, `#004e64`, `#ffffff` — or mix your own in the picker) | `"#000000"` | Pill base color. `opacity` still controls the translucency on top of it. | Colors |
+| `textColor` | **any** valid `#rrggbb` (9 quick-pick swatches: `#ffffff`, `#9ca3af`, `#111111`, `#f5c518`, `#f97316`, `#4ade80`, `#60a5fa`, `#a78bfa`, `#ff6b6b` — or the picker) | `"#ffffff"` | Color of the numerals and labels. | Colors |
+| `customBgColor` / `customTextColor` | a valid `#rrggbb` or `""` | `""` | The last color you mixed in the picker, **remembered** so the picker swatch still shows it while a preset is active. | Colors |
 | `opacity` | number `0`–`1` | `1.0` | Pill background alpha (`1.0` = solid). Values outside the range get clamped. | Colors (slider) |
+| `textOpacity` | number `0`–`1` | `1.0` | Text (numeral/label) alpha, independent of the pill. In **Cutout** mode this doubles as the cutout strength. | Colors (slider) |
+| `cutout` | boolean | `false` | **Cutout mode:** the numerals become holes punched through the opaque pill to the desktop (text color is ignored). | Colors (checkbox) |
 | `showSeconds` | boolean | `false` | Show the wall clock as `HH:MM:SS` instead of `HH:MM`. | — (config file) |
 | `hour12` | boolean | `true` | `true` = 12-hour clock with AM/PM; `false` = 24-hour and the meridiem is hidden. | — (config file) |
 | `alwaysOnTop` | boolean | `true` | Whether the widget floats above everything. | Tray menu ("Float on top") |
@@ -249,7 +256,7 @@ the ⚙ settings panel (it only talks to the app through a callback, so it behav
 identically here), and persistence (via `localStorage`, per browser / per origin).
 
 **What can't work** (it's a browser tab, not an OS window): no always-on-top, no
-frameless window, no drag-to-move, and the **×** and resize grip are hidden.
+frameless window, no drag-to-move, and the resize grip is hidden.
 
 ---
 
@@ -287,6 +294,9 @@ to the catalog.)
 
 ---
 
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for how it's wired. The original product
-spec and implementation plan are kept for the curious in
+See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for how it's wired, and
+[`dev/TECHNICAL.md`](dev/TECHNICAL.md) for the rationale behind the non-obvious engineering
+choices (the cutout canvas, the cursor-poll hover, the separate live settings window, the
+font-availability cache, fit-to-fill scaling, and the known VM test flakes). The original
+product spec and implementation plan are kept for the curious in
 [`dev/PRD.md`](dev/PRD.md) and [`dev/PLAN.md`](dev/PLAN.md).

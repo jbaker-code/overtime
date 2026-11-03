@@ -3,6 +3,11 @@
 How the thing is wired. If `README.md` is "how do I run it," this is "how does it
 work." Written against the actual code, not the aspirations.
 
+> For the **rationale** behind the non-obvious choices — why Cutout is a `<canvas>`, why
+> hover is a main-process cursor poll, why Settings is a separate window, the font-cache and
+> fit-to-fill subtleties, the frozen identifiers, and the known VM test flakes — see
+> [`dev/TECHNICAL.md`](dev/TECHNICAL.md). This file is the map; that one is the "why."
+
 > **A naming leftover:** the app used to be called *Episode Timer*, and a few internal
 > identifiers still carry that name — the preload bridge is `window.episodeTimer`, the
 > environment variables are `EPISODE_TIMER_*`, and browser mode persists under the
@@ -312,17 +317,26 @@ The shape (frozen in `source/app/shared/config-schema.js`, the single source of 
 ```jsonc
 {
   "schemaVersion": 1,
-  "window":   { "x": 1480, "y": 60, "width": 240, "height": 130 },  // x/y absent on first run
+  "window":         { "x": 1480, "y": 60, "width": 240, "height": 130 }, // pill bounds; x/y absent on first run
+  "settingsWindow": { "x": 320, "y": 80, "width": 1262, "height": 975 }, // settings-window bounds (Pass H)
   "timer":    { "status": "paused", "accumulatedMs": 5400000, "runningSince": null },
   "settings": {
-    "layout":      "stack",     // one of LAYOUTS (arrangement of the two readouts)
-    "font":        "system",    // one of FONTS (system / web-safe stacks only)
-    "bgColor":     "#000000",   // one of BG_COLORS (pill base color)
-    "textColor":   "#ffffff",   // one of TEXT_COLORS (numerals + labels)
-    "opacity":     1.0,         // pill alpha, clamped to [0, 1]; default 1.0 = solid
-    "showSeconds": false,       // HH:MM:SS instead of HH:MM
-    "hour12":      true,        // false → 24-hour, meridiem hidden
-    "alwaysOnTop": true         // main-side window level
+    "layout":          "stack",   // one of LAYOUTS (10 arrangements of the two readouts)
+    "font":            "system",  // one of FONTS (9 system / web-safe stacks)
+    "customFont":      "",        // remembered system-font family from the font browser, or ''
+    "useCustomFont":   false,     // true → render customFont instead of the `font` enum
+    "bgColor":         "#000000", // ACTIVE pill color — any valid #rrggbb (presets are quick-picks)
+    "textColor":       "#ffffff", // ACTIVE text color — any valid #rrggbb
+    "customBgColor":   "",        // remembered custom bg from the color picker, or ''
+    "customTextColor": "",        // remembered custom text color, or ''
+    "opacity":         1.0,       // background alpha, clamped [0,1]; 1.0 = solid
+    "textOpacity":     1.0,       // text alpha, clamped [0,1]; also the cutout strength
+    "cutout":          false,     // true → punch numerals through the pill (canvas knockout)
+    "showSeconds":     false,     // HH:MM:SS instead of HH:MM
+    "hour12":          true,      // false → 24-hour, meridiem hidden
+    "alwaysOnTop":     true,      // main-side window level
+    "showClock":       true,      // hide/show the clock readout
+    "showStopwatch":   true       // hide/show the stopwatch readout
   }
 }
 ```

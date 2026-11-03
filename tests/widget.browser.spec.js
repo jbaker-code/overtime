@@ -1034,10 +1034,12 @@ test.describe('single-file: Colors tab — cutout mode, slider labels, preview o
     });
     expect(parseFloat(b.w)).toBeGreaterThan(0);
     expect(b.style).toBe('solid');
-    // ~50%-opacity gray
+    // SOLID, fully-OPAQUE mid-gray (#808080 = rgb(128,128,128), alpha 1). It used to be
+    // rgba(128,128,128,0.5), which went see-through over the preview's checkerboard backing;
+    // the opaque color draws a crisp bound in both the browser panel and the Electron window.
     const c = parseColor(b.color);
     expect(c.r).toBe(128); expect(c.g).toBe(128); expect(c.b).toBe(128);
-    expect(c.a).toBeCloseTo(0.5, 2);
+    expect(c.a).toBe(1);
   });
 
   test('the Cutout checkbox sits directly under the text-opacity slider (unchecked by default)', async ({ page }) => {
