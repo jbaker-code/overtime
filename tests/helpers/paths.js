@@ -1,4 +1,4 @@
-// Shared paths for the test suite. Mirrors scripts/lib/paths.js (PLAN.md §4.1) without
+// Shared paths for the test suite. Mirrors source/scripts/lib/paths.js (PLAN.md §4.1) without
 // importing it, so tests still load if the build scripts are missing/broken.
 const path = require('path');
 const os = require('os');

@@ -14,14 +14,14 @@
 const { defineConfig, devices } = require('@playwright/test');
 
 module.exports = defineConfig({
-  testDir: 'tests',
+  testDir: '.', // this config now lives in tests/, so the spec dir is alongside it
   timeout: 30_000,
   expect: { timeout: 5_000 },
   fullyParallel: false, // Electron launches real windows; keep everything serial
   workers: 1,
   reporter: [['list'], ['html', { open: 'never' }]],
   // Builds the single-file page to <scratch>/test/index.html (never dirties dist/).
-  globalSetup: require.resolve('./tests/helpers/global-setup.js'),
+  globalSetup: require.resolve('./helpers/global-setup.js'),
   projects: [
     { name: 'unit', testMatch: /.*\.unit\.spec\.js/ },
     {

@@ -1,4 +1,4 @@
-/* src/renderer/styles.css
+/* source/app/renderer/styles.css
  * ---------------------------------------------------------------------------
  * The whole look: a translucent pill with big tabular numerals that scale with
  * the window (vmin units + the aspect lock in main.js mean the content always
@@ -68,6 +68,11 @@ html, body {
   align-items: center;
   box-sizing: border-box;
   overflow: hidden;
+  /* #app is already a stacking context (position:fixed); isolation makes that explicit and
+   * robust so the cutout canvas's z-index:-2 reliably sits above #app's own background yet
+   * below the ::after hover tint (z-index:-1) and all in-flow content. Harmless when cutout
+   * is off. (The actual knockout compositing happens inside the <canvas>, not via CSS blend.) */
+  isolation: isolate;
   /* Grab ANY empty area of the pill to move the window. Every interactive
    * child (the grip, the settings-panel controls) sets no-drag so clicks land. */
   -webkit-app-region: drag;
@@ -78,17 +83,25 @@ html, body {
    * so the configured background itself can change instantly, with no flash. */
 }
 
-/* ---- hover: a 50%-black overlay tints the whole pill -------------------- */
+/* ---- hover: a 50%-black overlay + a two-tone edge ring tint the pill ----- */
 /* The on-pill control icons are gone, so hover no longer reveals a strip. Instead a
  * non-interactive overlay paints the ENTIRE pill 50% black while hovered — a visible
  * grab/drag target even over a fully transparent configured background. It's a
  * pseudo-element rather than a `background` override so that ONLY the overlay's opacity
  * animates (the configured background never transitions -> no startup/settings flash).
  *
+ * WHY the ring too: a 50%-black tint is ~invisible over an already dark/black pill (and the
+ * default pill IS black), so on hover the user still couldn't find the edges. We ADD a subtle
+ * TWO-TONE ring hugging the pill's border-radius — a ~1px light line over a ~1px dark line via
+ * stacked INSET box-shadows — so one tone always contrasts whatever the background (dark pill ->
+ * the white line reads; light pill -> the dark line reads; transparent -> both frame the shape).
+ * It rides the SAME overlay, so it's gated purely on data-hover (no startup flash) and shows in
+ * BOTH builds (browser DOM hover + Electron's cursor-poll IPC).
+ *
  * Stacking: #app is a positioned element (fixed) = its own stacking context. The
  * overlay uses z-index:-1 so it paints ABOVE #app's own background (painted first) but
- * BELOW the in-flow readouts (#face), the grip and the settings panel — the tint dims
- * the pill surface, never the clock text. pointer-events:none keeps the pill draggable. */
+ * BELOW the in-flow readouts (#face), the grip and the settings panel — the tint + ring dim/
+ * frame the pill surface, never the clock text. pointer-events:none keeps the pill draggable. */
 #app::after {
   content: "";
   position: absolute;
@@ -100,7 +113,45 @@ html, body {
   pointer-events: none;
   z-index: -1;
 }
-#app[data-hover="true"]::after { opacity: 1; }
+#app[data-hover="true"]::after {
+  opacity: 1;
+  /* Two-tone edge ring: the light line (listed first = painted on top) occupies the outer 1px,
+   * the dark line the next 1px — so the pill edge is findable on ANY background. Inset so it
+   * stays inside the frameless/transparent window (an outset shadow would fall outside the
+   * window bounds and be clipped). Hugs border-radius via the pseudo's inherited radius. */
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.6),
+    inset 0 0 0 2px rgba(0, 0, 0, 0.5);
+}
+
+/* ---- cutout (knockout) mode — numerals as REAL holes through the pill --- */
+/* When #app[data-cutout="true"] the numerals become actual transparent HOLES so the desktop
+ * shows through them over the transparent Electron window. CSS can't do this (mix-blend-mode
+ * has no Porter-Duff alpha-erase), so the hole-punch is drawn on a <canvas> by JS
+ * (settings-apply.js paintCutout -> globalCompositeOperation:'destination-out'); CSS's job
+ * here is only to stage it:
+ *   - make the DOM #app background TRANSPARENT so the canvas is the visible pill surface, and
+ *   - HIDE the DOM #face (visibility:hidden, but KEEP it in layout so paintCutout can MEASURE
+ *     each readout's rect + font and redraw it as the knockout — this is what makes the holes
+ *     track all 10 layouts, the font and the fit scaling with no geometry duplication).
+ * The .et-cutout canvas (below) sits at z-index:-2 — above #app's own (now transparent)
+ * background but BELOW the ::after hover tint (z-index:-1), the grip, the controls and the
+ * settings panel, so all of those stay functional. On hover the 50%-black tint paints over
+ * the holes (an acceptable grab affordance while interacting); off-hover the holes show.
+ * When cutout is OFF, none of this applies and #face / #app render exactly as before. */
+#app[data-cutout="true"] { background: transparent; }
+#app[data-cutout="true"] #face { visibility: hidden; }
+
+/* The knockout canvas: covers the pill, clipped to the rounded corners by #app's
+ * overflow:hidden + border-radius. z-index:-2 keeps it at the background layer (below the
+ * hover tint at -1). pointer-events:none so it never blocks the window drag. */
+.et-cutout {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  display: block;
+}
 
 /* ---- the draggable face + readouts ------------------------------------- */
 
@@ -222,6 +273,43 @@ html, body {
   );
 }
 
+/* ---- the SETTINGS WINDOW's resize grip --------------------------------- */
+/* Same diagonal-hatch look as the pill's #grip, but for the separate settings
+ * window (settings.html). The window's rounded, frameless corners are hard to
+ * grab, so this corner handle is ALWAYS visible (not hover-gated) and sits ABOVE
+ * the settings panel (#settings-panel is z-index:10). Fixed px sizing keeps it a
+ * sensible target in the large editing window rather than scaling to a giant
+ * vmin block. settings-window.js wires it to bridge.resizeBy (screen-delta). */
+#settings-grip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 26px;
+  height: 26px;
+  z-index: 30;                 /* above the panel (z-index:10) */
+  cursor: nwse-resize;
+  -webkit-app-region: no-drag; /* grabbable for resize, not window drag */
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0,
+    transparent 4px,
+    rgba(255, 255, 255, 0.55) 4px,
+    rgba(255, 255, 255, 0.55) 5px
+  );
+  -webkit-mask-image: linear-gradient(-45deg, #000 0 55%, transparent 55%);
+  mask-image: linear-gradient(-45deg, #000 0 55%, transparent 55%);
+  border-bottom-right-radius: 6vmin;
+}
+#app[data-theme="light"] #settings-grip {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0,
+    transparent 4px,
+    rgba(0, 0, 0, 0.5) 4px,
+    rgba(0, 0, 0, 0.5) 5px
+  );
+}
+
 /* ---- on-pill controls — BROWSER MODE ONLY ------------------------------ */
 /* Pass C stripped the on-pill controls because the Electron build moved all control to the
  * tray + native right-click menu — correct for Electron, but it left the browser/single-file
@@ -246,9 +334,16 @@ html, body {
  *
  * Size: the cluster is kept COMPACT (small buttons, a thin bar) and px-capped via clamp(), so
  * the bottom bar doesn't grow with the window and stops geometrically covering the lower
- * readout (#clock/#stopwatch) on hover — the ~26%-of-the-stopwatch overlap the old 11vmin
- * bar caused in stacked layouts. (The readouts fill the pill via app.js's fit, so a thin bar
- * clears them at normal browser-window proportions; a horizontal layout clears at any size.) */
+ * readout (#clock/#stopwatch) on hover — the ~26%-of-the-stopwatch overlap the old 11vmin bar
+ * caused. The readouts fill the pill via app.js's fit (to a ~6%-of-height margin), so the bar
+ * must stay UNDER that margin to clear them: the TALL layouts are the binding case — `dash`
+ * (clock + separator + stopwatch) and `centered-gap` (extra --face-gap) push the bottom readout
+ * lowest, so 11vmin (≈16% of height) covered them and even 6vmin (plus padding) still grazed
+ * `dash` (~6.6%). At 4.4vmin + a hairline pad the bar sits ≈5% of height — below the fit margin
+ * — so it clears EVERY layout (stack/dash/centered-gap and the horizontals) at normal browser
+ * sizes (≥640×400). The 14px floor keeps the tiny widget size no taller than the old bar; at
+ * that extreme a pill-filling stacked face still reaches the bottom edge (a fit matter owned
+ * elsewhere, and controls are hidden in Electron anyway). */
 #controls {
   display: none; /* SAFE DEFAULT: hidden unless a #app[data-env="browser"] opts in (below) */
 }
@@ -260,8 +355,8 @@ html, body {
   bottom: 0;
   justify-content: center;
   align-items: center;
-  gap: clamp(6px, 2.5vmin, 14px);
-  padding: clamp(3px, 1vmin, 8px) 0;
+  gap: clamp(5px, 2vmin, 12px);
+  padding: clamp(1px, 0.4vmin, 5px) 0;
   z-index: 1;                 /* above the tint (::after, -1) and the in-flow face */
   opacity: 0;                 /* hidden until hover, matching the grip's reveal */
   transition: opacity 150ms ease;
@@ -275,14 +370,15 @@ html, body {
   background: rgba(255, 255, 255, 0.16);
   color: #fff;
   /* Compact + px-capped so the bar stays thin in a large browser window (the old 11vmin bar
-   * scaled WITH the window and re-covered the readout at every size). Dropped to 6vmin and
-   * capped at 34px; the 14px floor keeps the tiny-widget size no taller than the old bar.
-   * clamp(min, vmin, max). */
-  width: clamp(14px, 6vmin, 34px);
-  height: clamp(14px, 6vmin, 34px);
+   * scaled WITH the window and re-covered the readout at every size). Dropped to 4.4vmin and
+   * capped at 34px so the whole bar stays under the fit's ~6%-of-height margin (clears the tall
+   * dash / centered-gap layouts, not just stack); the 14px floor keeps the tiny-widget size no
+   * taller than the old bar. clamp(min, vmin, max). */
+  width: clamp(14px, 4.4vmin, 34px);
+  height: clamp(14px, 4.4vmin, 34px);
   border-radius: 50%;
   cursor: pointer;
-  font-size: clamp(9px, 3.4vmin, 18px);
+  font-size: clamp(9px, 2.6vmin, 16px);
   line-height: 1;
   padding: 0;
   display: inline-flex;
@@ -360,8 +456,10 @@ html, body {
 .tab:hover { color: #e8e8ee; background: rgba(255, 255, 255, 0.05); }
 .tab.is-active, .tab[aria-selected="true"] { color: #fff; border-bottom-color: #6cc0ff; }
 
-/* scrollable body */
-.settings-body { flex: 1 1 auto; overflow: auto; padding: clamp(8px, 3vmin, 16px); }
+/* scrollable body. The TOP padding is deliberately larger than the sides — roughly the
+ * height of the tab bar above it — so the cards aren't cramped right up under the
+ * Layout/Font/Colors tabs (feature E). The side/bottom padding is unchanged. */
+.settings-body { flex: 1 1 auto; overflow: auto; padding: clamp(26px, 7vmin, 52px) clamp(8px, 3vmin, 16px) clamp(8px, 3vmin, 16px); }
 .tab-panel { display: none; }
 .tab-panel.is-active { display: block; }
 
@@ -379,9 +477,15 @@ html, body {
   gap: clamp(6px, 1.8vmin, 12px);
   justify-content: center;
 }
-/* Layout + Font tabs: exactly 5 fixed-width tiles per row, centered, ~2x size. */
+/* Layout + Font tabs: exactly 5 fixed-width tiles per row, centered. The tiles are
+ * RESPONSIVE (feature D) — the vmin term grows the track with the panel, so the big
+ * default settings window (~1262x975) gets large, easy-to-read tiles while a small panel
+ * stays tidy — all bounded by the clamp so they never get absurdly huge or tiny. The
+ * per-tile sample text is kept fit-contained inside each tile by fitFontSwatches() in
+ * settings-panel.js (measure + shrink), so a wider track just means a bigger readable
+ * sample, never a bleeding one. */
 .option-grid.grid-5 {
-  grid-template-columns: repeat(5, clamp(92px, 17vmin, 128px));
+  grid-template-columns: repeat(5, clamp(92px, 17vmin, 170px));
   justify-content: center;
 }
 /* color swatches pack tighter (swatch size kept as-is). A FIXED 5-column track (10
@@ -410,12 +514,15 @@ html, body {
 }
 .option-caption { font-size: clamp(8px, 2.4vmin, 12px); color: #c7c7d0; text-align: center; }
 
-/* Bigger tiles (~2x) on the Layout + Font tabs. */
-.grid-5 .option { min-height: clamp(82px, 24vmin, 120px); padding: clamp(7px, 2vmin, 12px); }
+/* Bigger tiles on the Layout + Font tabs — responsive (feature D): taller/larger at the
+ * big default window, bounded so they stay tidy when the panel is small. */
+.grid-5 .option { min-height: clamp(82px, 24vmin, 160px); padding: clamp(7px, 2vmin, 12px); }
 .grid-5 .option-caption { font-size: clamp(9px, 2.1vmin, 13px); }
 
-/* font swatch: the sample time rendered in the candidate font (~2x) */
-.font-swatch { font-size: clamp(26px, 8vmin, 46px); line-height: 1; font-variant-numeric: tabular-nums; }
+/* font swatch: the sample time rendered in the candidate font. The clamp is the UPPER
+ * bound the sample may reach on a big panel; fitFontSwatches() then shrinks it per tile
+ * so even a wide face stays inside its card (feature C — no bleed). */
+.font-swatch { font-size: clamp(26px, 8vmin, 64px); line-height: 1; font-variant-numeric: tabular-nums; }
 
 /* ---- Font tab: the "Custom" tile (opens the system-font browser) ------- */
 /* The first tile in the Font grid. It REPLACES the old name bar + Edit button: its
@@ -524,6 +631,104 @@ html, body {
   cursor: pointer;
   accent-color: #6cc0ff; /* themes the native range track/thumb in Chromium */
 }
+/* The per-slider gray label (reuses .settings-section's gray header look). */
+.settings-section.slider-label { margin-bottom: clamp(2px, 0.8vmin, 5px); }
+
+/* Cutout checkbox row — sits directly under the text-opacity slider. The whole row is a
+ * label so a click anywhere on it toggles the box. */
+.cutout-row {
+  -webkit-app-region: no-drag;
+  display: flex; align-items: center; gap: clamp(5px, 1.6vmin, 9px);
+  padding: clamp(3px, 1.2vmin, 7px) 2px clamp(2px, 1vmin, 5px);
+  cursor: pointer; user-select: none;
+}
+.cutout-checkbox {
+  -webkit-app-region: no-drag;
+  width: clamp(13px, 3.6vmin, 18px); height: clamp(13px, 3.6vmin, 18px);
+  margin: 0; cursor: pointer; accent-color: #6cc0ff; flex: 0 0 auto;
+}
+.cutout-caption { font-size: clamp(10px, 3vmin, 15px); color: #e8e8ee; font-weight: 600; }
+
+/* Cutout ON greys + disables the text-color swatches (they don't apply in knockout mode).
+ * The text-opacity slider (the strength control) and everything else stay active. The text
+ * PICKER swatch is greyed the same way (it has no data-setting, so :disabled + .is-disabled). */
+.option-swatch.is-disabled, .option[data-setting="textColor"]:disabled, .option-picker:disabled {
+  opacity: 0.35; cursor: default; pointer-events: none;
+}
+
+/* ---- Colors tab: the PICKER swatch (last cell of each grid) ---------------- */
+/* Modeled on the Font tab's Custom tile: a dashed "action" tile. Its chip shows the
+ * remembered custom color (filled for bg, an 'A' glyph for text), with a dropper icon
+ * overlaid. Empty (no remembered custom yet) -> a faint rainbow "mix one" hint. */
+.option-picker { border-style: dashed; position: relative; }
+.swatch-picker { position: relative; }
+.swatch-picker.is-empty:not(.swatch-text) {
+  background: conic-gradient(#ff6b6b, #f5c518, #4ade80, #60a5fa, #a78bfa, #ff6b6b);
+}
+.swatch-picker.swatch-text.is-empty { color: #8a8a93; }
+/* The dropper icon, centered over the chip so the tile reads as "pick a color". */
+.picker-dropper {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: clamp(13px, 4.6vmin, 22px); height: clamp(13px, 4.6vmin, 22px);
+  color: #f2f2f4; pointer-events: none;
+  filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.6));
+}
+.picker-dropper svg { width: 100%; height: 100%; display: block; }
+
+/* ---- the custom color picker overlay (hue wheel + SV square + hex) --------- */
+/* Hidden until a picker swatch is clicked (#app[data-colorpicker="open"]); then it takes over
+ * the tab area exactly like the font browser (header where the tab bar was, the preview still
+ * visible above). Reuses the .fb-header / .fb-btn styling for the [← Back] · title · [Save] bar. */
+#color-picker { display: none; flex: 1 1 auto; min-height: 0; flex-direction: column; -webkit-app-region: no-drag; }
+#app[data-colorpicker="open"] .settings-tabs { display: none; }
+#app[data-colorpicker="open"] .settings-body { display: none; }
+#app[data-colorpicker="open"] #color-picker { display: flex; }
+
+.cp-body {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; align-items: center;
+  gap: clamp(10px, 3vmin, 20px);
+  padding: clamp(10px, 3.5vmin, 22px) clamp(8px, 3vmin, 16px);
+}
+/* wheel LEFT, square RIGHT */
+.cp-main {
+  display: flex; align-items: center; justify-content: center;
+  gap: clamp(12px, 4vmin, 28px); flex-wrap: wrap;
+}
+.cp-wheel-wrap, .cp-square-wrap {
+  position: relative; flex: 0 0 auto;
+  width: clamp(130px, 34vmin, 260px); height: clamp(130px, 34vmin, 260px);
+}
+.cp-hue, .cp-square {
+  width: 100%; height: 100%; display: block; border-radius: 10px;
+  -webkit-app-region: no-drag; touch-action: none; cursor: crosshair;
+}
+.cp-hue { border-radius: 50%; }
+.cp-square { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15); }
+/* draggable markers (positioned by JS in percent) */
+.cp-hue-marker, .cp-sv-marker {
+  position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px;
+  border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+  pointer-events: none; background: transparent;
+}
+.cp-foot {
+  display: flex; align-items: center; justify-content: center;
+  gap: clamp(8px, 2.4vmin, 14px);
+}
+.cp-current {
+  width: clamp(28px, 7vmin, 44px); height: clamp(28px, 7vmin, 44px);
+  border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.3); flex: 0 0 auto;
+}
+.cp-hex {
+  -webkit-app-region: no-drag;
+  width: clamp(90px, 24vmin, 140px); text-align: center;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: clamp(13px, 3.4vmin, 18px); letter-spacing: 0.04em;
+  padding: clamp(5px, 1.6vmin, 9px) clamp(6px, 2vmin, 10px);
+  border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.06); color: #f2f2f4;
+}
+.cp-hex:focus { outline: none; border-color: #6cc0ff; background: rgba(108, 192, 255, 0.1); }
 
 /* ---- layout PREVIEW tiles (the little arrangement diagrams) ------------ */
 
@@ -612,8 +817,16 @@ html, body {
    * element's font-size — every readout below is sized in em, so they scale together. */
   width: 360px;
   max-width: 100%;
+  box-sizing: border-box; /* keep the outer box at 360 once the outline border is added */
   aspect-ratio: 240 / 130;
   border-radius: clamp(14px, 3.4vmin, 22px);
+  /* A subtle ~50% gray outline so the pill's bounds read against the dark (~85% black)
+   * settings backdrop. It's a real BORDER (not an inset box-shadow): the border painter
+   * rounds its own corners cleanly, so it does NOT reintroduce the Pass-D 1px jaggy
+   * corner seam. background-clip:padding-box (below) keeps the translucent fill tucked
+   * INSIDE this border, so there's no fill/border seam. (An `outline` would be clipped
+   * by the checkerboard backdrop's overflow:hidden, so a border is the clean choice.) */
+  border: 1px solid rgba(128, 128, 128, 0.5);
   background: rgba(var(--bg-rgb), var(--pill-opacity));
   /* Clip the background to the padding box so the translucent fill can't bleed a
    * sub-pixel seam past the rounded corners (#4). */
@@ -655,6 +868,16 @@ html, body {
 #sp-meridiem:empty { display: none; }
 .sp-sw { font-size: var(--sp-sw); opacity: 0.9; line-height: 1.1; }
 .sp-sep { display: none; opacity: 0.5; font-weight: 600; line-height: 1; }
+
+/* Preview cutout: the SAME canvas knockout, scoped to the preview pill. position:relative
+ * makes #settings-preview the containing block for its own .et-cutout canvas (inset:0), and
+ * isolation keeps it a self-contained stacking context. In cutout mode the preview background
+ * goes transparent and .sp-face is hidden-but-measured, exactly like the real pill — but here
+ * the holes reveal the preview's own backdrop (the checkerboard / settings surface), not the
+ * real wallpaper (host-only). settings-window.js / app.js call paintCutout() for the preview. */
+#settings-preview { isolation: isolate; position: relative; }
+#app[data-cutout="true"] #settings-preview { background: transparent; }
+#app[data-cutout="true"] #settings-preview .sp-face { visibility: hidden; }
 
 /* per-layout preview sizing/arrangement (parallels the real #face rules) */
 #app[data-layout="stopwatch-top"] .sp-sw { order: -1; }

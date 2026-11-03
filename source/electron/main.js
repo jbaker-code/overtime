@@ -23,10 +23,17 @@ var nativeImage = electron.nativeImage;
 var path = require('path');
 var fs = require('fs');
 
-var config = require('./src/main/config');
-var windowState = require('./src/main/window-state');
-var schema = require('./src/shared/config-schema');
-var stopwatch = require('./src/shared/stopwatch');
+var config = require('./config');
+var windowState = require('./window-state');
+var schema = require('../app/shared/config-schema');
+var stopwatch = require('../app/shared/stopwatch');
+
+// Name the raw (unpackaged) Electron process so Activity Monitor / `ps` / the dev
+// menu-bar entry read "Overtime" instead of the generic "Electron". The PACKAGED
+// app already takes its name from electron-builder's productName, so this only
+// affects dev runs (`npm start`); harmless there and set before app 'ready'.
+app.setName('Overtime');
+try { process.title = 'Overtime'; } catch (e) { /* non-fatal; cosmetic only */ }
 
 // Test/dev knobs.
 var IS_TEST = process.env.EPISODE_TIMER_TEST === '1';
@@ -65,15 +72,29 @@ if (!IS_TEST) {
   }
 }
 
-// Settings-mode window grow (Electron-only). While the settings panel is open we
-// temporarily grow the window to a comfortable editing size, remembering the
-// user's real widget bounds so we can restore them EXACTLY on close. We never
-// persist the grown size — only the user's real widget size is ever saved.
-var SETTINGS_W = 720;
-var SETTINGS_H = 620;
-var preSettingsBounds = null; // the user's widget bounds before we grew
-var settingsGrown = false; // true while grown -> suppresses bounds persistence
+// The SEPARATE settings window (Electron-only). Created on demand when "Settings…"
+// is chosen and focused (never duplicated) if already open; closing it just destroys
+// the window while the pill keeps running. Its own frameless/transparent/rounded chrome
+// + bounds persistence (config key 'settingsWindow') live in createSettingsWindow below.
+// This REPLACES the old "grow the pill to fit an in-page panel" hack — the pill no
+// longer grows for settings, so the real clock stays visible over the wallpaper.
+var settingsWin = null;
 var tray = null; // the menu-bar tray (Electron-only; created in whenReady)
+
+// Grant ONLY the local-fonts permission (queryLocalFonts, used by the Font tab's
+// system-font browser) on a window's session, denying everything else — a frameless
+// clock needs no camera/mic/geolocation. Shared by the pill AND the settings window
+// (the font browser now lives in the settings window), so BOTH sessions get exactly
+// this one grant and nothing more. There was no prior handler to preserve; if one is
+// ever added, chain it in the `else` branch.
+function installLocalFontsPermission(ses) {
+  ses.setPermissionRequestHandler(function (_wc, permission, callback) {
+    callback(permission === 'local-fonts');
+  });
+  ses.setPermissionCheckHandler(function (_wc, permission) {
+    return permission === 'local-fonts';
+  });
+}
 
 function createWindow() {
   config.load(); // never throws
@@ -105,20 +126,10 @@ function createWindow() {
     }
   }));
 
-  // local-fonts permission: the Font tab's system-font browser calls the
-  // renderer's queryLocalFonts() to enumerate installed families, which Chromium
-  // gates behind the 'local-fonts' permission. Grant ONLY that on this window's
-  // session (the user gesture is the "Edit" click), and deny everything else — a
-  // frameless desktop clock needs no camera/mic/geolocation/etc., so this keeps
-  // the secure default posture rather than blanket-granting. There was no prior
-  // handler to preserve; if one is ever added, chain it in the `else` branch.
+  // local-fonts permission on THIS (pill) window's session — see
+  // installLocalFontsPermission. The settings window grants the same on its own session.
   var ses = win.webContents.session;
-  ses.setPermissionRequestHandler(function (_wc, permission, callback) {
-    callback(permission === 'local-fonts');
-  });
-  ses.setPermissionCheckHandler(function (_wc, permission) {
-    return permission === 'local-fonts';
-  });
+  installLocalFontsPermission(ses);
 
   // Top-most window level so we float above basically everything.
   if (settings.alwaysOnTop) win.setAlwaysOnTop(true, 'screen-saver');
@@ -138,7 +149,7 @@ function createWindow() {
   // putting a timer on screen. Do not turn screen-capture blocking on here.
   // (A test greps this file to be sure it never creeps back in.)
 
-  win.loadFile(path.join(__dirname, 'src/renderer/index.html'));
+  win.loadFile(path.join(__dirname, '../app/renderer/index.html'));
   win.once('ready-to-show', function () { win.show(); startHoverPolling(); });
 
   // Keep the hover poll scoped to when the widget is actually on screen: a hidden or
@@ -148,6 +159,11 @@ function createWindow() {
   win.on('restore', startHoverPolling);
   win.on('hide', stopHoverPolling);
   win.on('minimize', stopHoverPolling);
+  // Stop the poll at the START of teardown ('close'), not just 'closed': during teardown the
+  // webContents can be destroyed while win.isDestroyed() still reports false, so a stray poll
+  // tick's send() could throw "Object has been destroyed". Killing the timer here closes that
+  // window (the send is also wrapped in try/catch as a belt-and-suspenders).
+  win.on('close', stopHoverPolling);
 
   // Right-click anywhere on the pill -> the native context menu, mirroring the
   // tray exactly (shared buildMenuTemplate). Now that the on-pill control icons
@@ -156,10 +172,9 @@ function createWindow() {
   // drag region without any renderer wiring.
   win.webContents.on('context-menu', function () { popupContextMenu(); });
 
-  // Persist position + size as the user drags the widget around / resizes it —
-  // but NOT while we've temporarily grown the window for the settings panel
-  // (that grown size must never reach disk).
-  windowState.trackBounds(win, config, { shouldSkipSave: function () { return settingsGrown; } });
+  // Persist the pill's position + size as the user drags/resizes it. (No more
+  // settings-grow suppression — the pill never grows for settings now.)
+  windowState.trackBounds(win, config);
 
   if (WANT_DEVTOOLS) {
     // Note: the window goes opaque while DevTools is open — a documented
@@ -201,11 +216,16 @@ function cursorIsOverWindow() {
 function pollHoverOnce() {
   if (!win || win.isDestroyed()) return;
   var over;
-  try { over = cursorIsOverWindow(); } catch (e) { return; } // never let a poll tick throw
-  if (over !== lastHoverSent) {
-    lastHoverSent = over;
-    win.webContents.send('hover:changed', { hover: over });
-  }
+  try {
+    over = cursorIsOverWindow();
+    if (over !== lastHoverSent) {
+      lastHoverSent = over;
+      // During teardown the webContents can be destroyed while win.isDestroyed() is still
+      // false, so this send can throw "Object has been destroyed" — guard it (the poll is also
+      // stopped on the window's 'close', before that gap). A failed tick must never crash main.
+      win.webContents.send('hover:changed', { hover: over });
+    }
+  } catch (e) { /* stale window / destroyed webContents mid-teardown -> ignore this tick */ }
 }
 
 function startHoverPolling() {
@@ -250,20 +270,26 @@ function wireIpc() {
     return applySettingsPatch(partial);
   });
 
-  // window:resize-by -> grow/shrink from the corner grip. FREE resize now that
-  // the aspect lock is gone: dx changes width, dy changes height, independently.
-  ipcMain.on('window:resize-by', function (_event, delta) {
-    if (!win || win.isDestroyed()) return;
+  // window:resize-by -> grow/shrink from a corner grip. The SAME channel serves both
+  // the pill's grip and the settings window's grip: we resolve the BrowserWindow that
+  // SENT the IPC (event.sender) and resize THAT one, each with its own minimums. FREE
+  // resize (no aspect lock): dx changes width, dy changes height, independently.
+  ipcMain.on('window:resize-by', function (event, delta) {
+    var target = BrowserWindow.fromWebContents(event.sender);
+    if (!target || target.isDestroyed()) return;
     var dx = (delta && Number(delta.dx)) || 0;
     var dy = (delta && Number(delta.dy)) || 0;
 
-    var size = win.getSize();
+    var size = target.getSize();
     var w = size[0] + dx;
     var h = size[1] + dy;
 
-    // Clamp each dimension to its own minimum (no coupling between them).
-    if (w < schema.MIN_WIDTH) w = schema.MIN_WIDTH;
-    if (h < schema.MIN_HEIGHT) h = schema.MIN_HEIGHT;
+    // Per-window minimums (the settings window is far larger than the pill).
+    var isSettings = (settingsWin && target === settingsWin);
+    var minW = isSettings ? schema.SETTINGS_MIN_WIDTH : schema.MIN_WIDTH;
+    var minH = isSettings ? schema.SETTINGS_MIN_HEIGHT : schema.MIN_HEIGHT;
+    if (w < minW) w = minW;
+    if (h < minH) h = minH;
 
     // setSize's native binding requires finite INTEGERS. Rapid resizing can leave
     // w or h as a float (grip deltas aren't whole pixels), and a stray Infinity is
@@ -271,7 +297,7 @@ function wireIpc() {
     w = Math.round(w);
     h = Math.round(h);
     if (!Number.isFinite(w) || !Number.isFinite(h)) return;
-    win.setSize(w, h, false);
+    target.setSize(w, h, false);
   });
 
   // app:quit -> a renderer-initiated quit. The on-pill × button that used to call
@@ -280,42 +306,93 @@ function wireIpc() {
   // channel wired rather than leave a dangling API.
   ipcMain.on('app:quit', function () { app.quit(); });
 
-  // window:settings-open -> the renderer tells us when the settings panel opens
-  // (payload.open === true) or closes. On open we grow the window to a
-  // comfortable editing size (remembering the user's real size); on close we
-  // restore it exactly. The grown size is never persisted (settingsGrown gates
-  // trackBounds). Electron-only; browser mode never sends this.
-  ipcMain.on('window:settings-open', function (_event, payload) {
-    if (!win || win.isDestroyed()) return;
-    var open = !!(payload && payload.open);
-    if (open) growForSettings();
-    else restoreFromSettings();
+  // window:open-settings -> a renderer asks main to open/focus the SEPARATE settings
+  // window. The pill's test/debug hook uses this; the tray / right-click "Settings…"
+  // calls openSettingsWindow() directly. (Replaces the old window:settings-open
+  // grow round-trip — the pill no longer grows for settings.)
+  ipcMain.on('window:open-settings', function () { openSettingsWindow(); });
+}
+
+// --- the SEPARATE settings window (Electron-only) ---------------------------
+
+// Resolve the settings window's bounds: restore the persisted ones, else start at
+// the default size (~1262x975) positioned beside the pill. ALWAYS run the result
+// through clampBounds so it fits the display work area (dock/menu-bar excluded) —
+// if the screen can't fit the default, clampBounds shrinks it to the largest that
+// does and slides it fully on-screen. Never opens off-screen (mirrors the pill, D15).
+function computeSettingsBounds() {
+  var restored = windowState.restoreBounds(config, schema.DEFAULT_CONFIG.settingsWindow, {
+    key: 'settingsWindow',
+    minWidth: schema.SETTINGS_MIN_WIDTH,
+    minHeight: schema.SETTINGS_MIN_HEIGHT
   });
+  var rect = { width: restored.width, height: restored.height };
+  if (typeof restored.x === 'number' && typeof restored.y === 'number') {
+    rect.x = restored.x;
+    rect.y = restored.y;
+  } else {
+    // First open: anchor near the pill's top-left; clampBounds then slides the whole
+    // (possibly shrunk) rectangle fully onto the pill's display.
+    var anchor = (win && !win.isDestroyed()) ? win.getBounds() : { x: 80, y: 80 };
+    rect.x = anchor.x;
+    rect.y = anchor.y;
+  }
+  return windowState.clampBounds(rect);
 }
 
-// Grow the window up to the settings editing size if it's currently smaller,
-// keeping its top-left and clamping the bigger rectangle onto the display.
-function growForSettings() {
-  if (settingsGrown) return; // already grown
-  var cur = win.getBounds();
-  var targetW = Math.max(cur.width, SETTINGS_W);
-  var targetH = Math.max(cur.height, SETTINGS_H);
-  if (targetW === cur.width && targetH === cur.height) return; // already comfy
+function createSettingsWindow() {
+  var bounds = computeSettingsBounds();
 
-  preSettingsBounds = { x: cur.x, y: cur.y, width: cur.width, height: cur.height };
-  settingsGrown = true; // gate persistence before we change the size
+  settingsWin = new BrowserWindow(Object.assign({}, bounds, {
+    minWidth: schema.SETTINGS_MIN_WIDTH,
+    minHeight: schema.SETTINGS_MIN_HEIGHT,
+    frame: false, // frameless so it can be a rounded, dark panel (our own × + title-bar drag)
+    transparent: true, // rounded corners show through
+    hasShadow: false,
+    resizable: true, // native edge resize + our bottom-right grip
+    maximizable: false,
+    fullscreenable: false,
+    minimizable: true,
+    alwaysOnTop: false, // only the tiny pill floats on top; the editor is a normal window
+    skipTaskbar: true,
+    title: 'Overtime Settings',
+    show: false, // show on ready-to-show to avoid a flash
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'), // SAME preload/IPC as the pill
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: false // keep the preview clock ticking when unfocused
+    }
+  }));
 
-  var grown = windowState.clampBounds({ x: cur.x, y: cur.y, width: targetW, height: targetH });
-  win.setBounds(grown, false);
+  // Same single local-fonts grant as the pill (the font browser lives here now).
+  installLocalFontsPermission(settingsWin.webContents.session);
+
+  settingsWin.loadFile(path.join(__dirname, '../app/renderer/settings.html'));
+  settingsWin.once('ready-to-show', function () {
+    if (settingsWin && !settingsWin.isDestroyed()) { settingsWin.show(); settingsWin.focus(); }
+  });
+
+  // Persist this window's position AND size under its own config key.
+  windowState.trackBounds(settingsWin, config, { key: 'settingsWindow' });
+
+  if (WANT_DEVTOOLS) {
+    settingsWin.webContents.openDevTools({ mode: 'detach' });
+  }
+
+  settingsWin.on('closed', function () { settingsWin = null; });
 }
 
-// Restore the user's real widget bounds saved at open time.
-function restoreFromSettings() {
-  if (!settingsGrown) return;
-  var restore = preSettingsBounds;
-  settingsGrown = false;
-  preSettingsBounds = null;
-  if (restore) win.setBounds(restore, false);
+// Open the settings window on demand; focus it (never spawn a duplicate) if already up.
+function openSettingsWindow() {
+  if (settingsWin && !settingsWin.isDestroyed()) {
+    if (settingsWin.isMinimized()) settingsWin.restore();
+    settingsWin.show();
+    settingsWin.focus();
+    return;
+  }
+  createSettingsWindow();
 }
 
 // Apply the settings that only main can enforce. Today that's just the window
@@ -334,11 +411,19 @@ function applySettingsPatch(partial) {
   var merged = Object.assign({}, config.get('settings'), patch);
   config.set('settings', merged);
   applyMainSideSettings(merged);
-  if (win && !win.isDestroyed()) {
-    win.webContents.send('settings:changed', merged); // renderer re-applies CSS/clock
-  }
+  broadcastSettings(merged); // BOTH windows re-apply: the pill's real clock AND the settings preview
   updateTrayMenu(); // reflect alwaysOnTop (and anything else) on the tray
   return merged;
+}
+
+// Push the latest settings to EVERY window that renders them: the pill (so the real
+// clock/colors/font update live over the wallpaper) and, when open, the settings
+// window (so its live preview + panel highlights stay in sync). This is the one
+// broadcast behind both "edit in the settings window updates the pill" and "a tray
+// toggle updates the open settings window".
+function broadcastSettings(merged) {
+  if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) win.webContents.send('settings:changed', merged);
+  if (settingsWin && !settingsWin.isDestroyed() && settingsWin.webContents && !settingsWin.webContents.isDestroyed()) settingsWin.webContents.send('settings:changed', merged);
 }
 
 // --- menu-bar tray (macOS/Win/Linux; Electron-only) -------------------------
@@ -356,12 +441,6 @@ function showAndFocus() {
 // never mutates timer state itself.
 function sendTimerCommand(action) {
   if (win && !win.isDestroyed()) win.webContents.send('timer:command', { action: action });
-}
-
-// Ask the renderer to open the settings panel (it also triggers the window grow
-// via the existing window:settings-open round-trip).
-function requestOpenSettings() {
-  if (win && !win.isDestroyed()) win.webContents.send('ui:open-settings');
 }
 
 // Load the tray icon: a monochrome *Template image (macOS auto-inverts it for
@@ -413,7 +492,7 @@ function buildMenuTemplate() {
       click: function (item) { applySettingsPatch({ showStopwatch: !!item.checked }); }
     },
     { type: 'separator' },
-    { label: 'Settings…', click: function () { showAndFocus(); requestOpenSettings(); } },
+    { label: 'Settings…', click: function () { openSettingsWindow(); } },
     { label: 'Show / Bring to Front', click: showAndFocus },
     {
       label: 'Float on top',

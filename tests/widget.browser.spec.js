@@ -64,6 +64,19 @@ test.describe('single-file: shared widget behaviour', () => {
   registerSharedWidgetTests(test, expect, {
     open: (o) => openWidget(currentPage, o),
     resize: (p, w, h) => p.setViewportSize({ width: w, height: h }),
+    // Browser build: "Settings" is the IN-PAGE overlay on the SAME page (no second
+    // window), so opening it returns the same page the panel lives on.
+    openSettings: async (page) => {
+      await press(page, 'settings'); // -> __episodeTimer.openSettings() -> panel.open()
+      await expect(page.locator(SEL.panel)).toBeVisible();
+      return page;
+    },
+    // Browser env drives data-hover from DOM mouseenter/leave (no drag region in a tab).
+    setHover: async (p, on) => {
+      if (on) await p.hover(SEL.app);
+      else await p.dispatchEvent('html', 'mouseleave');
+      await p.waitForFunction((v) => document.querySelector('#app').dataset.hover === v, on ? 'true' : 'false');
+    },
   }, 'single-file');
 });
 
@@ -212,34 +225,69 @@ test.describe('single-file: on-pill controls (browser-only fallback)', () => {
     expect(await isDisabled(page, '#btn-reset')).toBe(false);
   });
 
-  test('on hover, the compact controls do NOT geometrically overlap the readouts (#clock/#stopwatch)', async ({ page }) => {
-    // REGRESSION FIX (Q1): the old 11vmin control bar scaled WITH the window, so in the
-    // default STACKED layout (the "worst" vertical case) the bottom bar re-covered ~26% of
-    // #stopwatch at hover, at every size. The cluster is now compact + px-capped, so a thin
-    // bottom bar clears the (fit-filled) readouts at a normal browser-window size. The
-    // single-file build runs in a real browser tab, so we measure at a representative tab
-    // size — NOT the tiny 240x130 Electron widget shape, where a pill-filling stacked face
-    // reaches the bottom edge no matter how small the bar is (that's the fit's job, owned by
-    // another pass; and the controls are hidden in Electron anyway).
-    await openWidget(page); // default layout = stack (clock over stopwatch)
+  test('on hover, the compact controls do NOT geometrically overlap the readouts in ANY layout (#clock/#stopwatch)', async ({ page }) => {
+    // REGRESSION FIX (Q1): the old 11vmin control bar scaled WITH the window, so the bottom
+    // bar re-covered the lower readout at every size (~26% of #stopwatch). The cluster is now
+    // compact + px-capped to sit UNDER the fit's ~6%-of-height margin, so it clears the readouts
+    // at a normal browser-window size. We measure a VERTICAL/stacked set — the binding case —
+    // including the TALL layouts the first fix still grazed: `dash` (clock + separator +
+    // stopwatch) and `centered-gap` (extra --face-gap) push the bottom readout lowest. (We skip
+    // the tiny 240x130 Electron widget shape, where a pill-filling stacked face reaches the
+    // bottom edge regardless of bar size — a fit matter owned elsewhere; controls are hidden in
+    // Electron anyway. The single-file build runs in a real, larger browser tab.)
+    await openWidget(page);
     await page.setViewportSize({ width: 640, height: 400 });
     await advance(page, 300); // let the fit settle at the new size (SETTLE_MS = 120)
     await page.hover(SEL.app);
     await expect(page.locator(SEL.app)).toHaveAttribute('data-hover', 'true');
-    // The cluster must actually be revealed (opacity 1) — we're asserting about what the user
-    // sees on hover, not a hidden element.
+    // The cluster must actually be revealed (opacity 1) — we're asserting what the user sees.
     await expect.poll(() => controlsOpacity(page)).toBe(1);
 
-    const overlap = await page.evaluate(() => {
-      const box = (s) => document.querySelector(s).getBoundingClientRect();
-      const area = (a, b) =>
-        Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left)) *
-        Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
-      const c = box('#controls');
-      return { stopwatch: area(c, box('#stopwatch')), clock: area(c, box('#clock')) };
-    });
-    expect(overlap.stopwatch, 'controls must not cover #stopwatch').toBe(0);
-    expect(overlap.clock, 'controls must not cover #clock').toBe(0);
+    const overlapFor = async (layout) => {
+      // Switch layout through the real settings path (NOT by poking the attribute), so the face
+      // re-fits for the new arrangement; opening the panel would occlude the readouts, so we
+      // drive the bridge directly. applyAndRemember re-fits synchronously.
+      await page.evaluate((l) => window.EpisodeTimerBridge.setSettings({ layout: l }), layout);
+      await expect(page.locator(SEL.app)).toHaveAttribute('data-layout', layout);
+      await advance(page, 200); // belt-and-suspenders: flush any pending settle
+      return page.evaluate(() => {
+        const box = (s) => document.querySelector(s).getBoundingClientRect();
+        const area = (a, b) =>
+          Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left)) *
+          Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+        const c = box('#controls');
+        return { stopwatch: area(c, box('#stopwatch')), clock: area(c, box('#clock')) };
+      });
+    };
+
+    for (const layout of ['stack', 'dash', 'centered-gap', 'one-line']) {
+      const o = await overlapFor(layout);
+      expect(o.stopwatch, `${layout}: controls must not cover #stopwatch`).toBe(0);
+      expect(o.clock, `${layout}: controls must not cover #clock`).toBe(0);
+    }
+  });
+
+  test('on hover, a two-tone edge ring appears (readable on any background); gone otherwise', async ({ page }) => {
+    // NEW: the 50%-black tint is ~invisible over a dark/black pill (the default), so hover also
+    // draws a subtle two-tone outline (stacked inset box-shadows: a light line over a dark line)
+    // hugging the pill, gated purely on data-hover so there's no startup flash. It rides the
+    // #app::after overlay, so it shows in BOTH builds (browser DOM hover + Electron poll->IPC).
+    const ring = (page) =>
+      page.evaluate(() => getComputedStyle(document.querySelector('#app'), '::after').boxShadow);
+    await openWidget(page);
+    await page.dispatchEvent('html', 'mouseleave');
+    await expect(page.locator(SEL.app)).toHaveAttribute('data-hover', 'false');
+    expect(await ring(page), 'no ring until hover').toBe('none');
+    await page.hover(SEL.app);
+    await expect(page.locator(SEL.app)).toHaveAttribute('data-hover', 'true');
+    const on = await ring(page);
+    // both tones present, inset, hugging the edge
+    expect(on).toContain('inset');
+    expect(on).toContain('rgba(255, 255, 255, 0.6)'); // light line (contrasts on dark pills)
+    expect(on).toContain('rgba(0, 0, 0, 0.5)');        // dark line (contrasts on light pills)
+    await page.dispatchEvent('html', 'mouseleave');
+    await expect(page.locator(SEL.app)).toHaveAttribute('data-hover', 'false');
+    expect(await ring(page), 'ring gone on leave').toBe('none');
   });
 });
 
@@ -313,7 +361,7 @@ test.describe('single-file: persistence (localStorage)', () => {
     expect(blob.schemaVersion).toBe(1);
     expect(blob.timer).toMatchObject({ status: 'paused' });
     expect(blob.timer.accumulatedMs).toBeGreaterThanOrEqual(2000);
-    expect(Object.keys(blob.settings).sort()).toEqual(['alwaysOnTop', 'bgColor', 'customFont', 'font', 'hour12', 'layout', 'opacity', 'showClock', 'showSeconds', 'showStopwatch', 'textColor', 'textOpacity']);
+    expect(Object.keys(blob.settings).sort()).toEqual(['alwaysOnTop', 'bgColor', 'customBgColor', 'customFont', 'customTextColor', 'cutout', 'font', 'hour12', 'layout', 'opacity', 'showClock', 'showSeconds', 'showStopwatch', 'textColor', 'textOpacity', 'useCustomFont']);
   });
 });
 
@@ -430,19 +478,28 @@ test.describe('single-file: settings panel', () => {
     await expectActive('layout');
   });
 
-  test('tile inventory: 10 layouts, 9 curated fonts (+ a Custom tile), 10 bg colors, 10 text colors', async ({ page }) => {
+  test('tile inventory: 10 layouts, 9 curated fonts (+ a Custom tile), 9 bg presets + a picker, 9 text presets + a picker', async ({ page }) => {
     await openPanel(page);
     await expect(page.locator('button.option[data-setting="layout"]')).toHaveCount(10);
-    await expect(page.locator('button.option[data-setting="bgColor"]')).toHaveCount(10);
-    await expect(page.locator('button.option[data-setting="textColor"]')).toHaveCount(10);
+    // Colors: 9 PRESET option tiles per grid (beige dropped) + a picker swatch (no data-setting).
+    await expect(page.locator('button.option[data-setting="bgColor"]')).toHaveCount(9);
+    await expect(page.locator('button.option[data-setting="textColor"]')).toHaveCount(9);
     // courier was dropped -> 9 curated font presets, each a data-setting="font" option tile.
     await expect(page.locator('button.option[data-setting="font"]')).toHaveCount(9);
     // The Custom tile is a font-grid tile but NOT an enum option (no data-setting); it's
     // always present in the DOM (hidden only when the Local Font Access API is absent).
     await expect(page.locator('#font-custom-tile')).toHaveCount(1);
     await expect(page.locator('#font-custom-tile')).not.toHaveAttribute('data-setting', /.*/);
-    // the removed name bar is gone
+    // Each color grid's LAST cell is a picker swatch: an .option-picker with NO data-setting
+    // (so the enum-select delegation skips it), carrying the dropper icon.
+    await expect(page.locator('#bg-color-picker.option-picker')).toHaveCount(1);
+    await expect(page.locator('#text-color-picker.option-picker')).toHaveCount(1);
+    await expect(page.locator('#bg-color-picker')).not.toHaveAttribute('data-setting', /.*/);
+    await expect(page.locator('#text-color-picker')).not.toHaveAttribute('data-setting', /.*/);
+    await expect(page.locator('#bg-color-picker .picker-dropper svg')).toHaveCount(1);
+    // the removed name bar is gone, and beige is no longer a bg swatch
     await expect(page.locator('#font-namebar')).toHaveCount(0);
+    await expect(page.locator('.option[data-setting="bgColor"][data-value="#f5f5dc"]')).toHaveCount(0);
   });
 
   test('defaults: exactly one tile selected per group, matching the defaults', async ({ page }) => {
@@ -538,7 +595,7 @@ test.describe('single-file: settings panel', () => {
   });
 
   test('reflect(): seeded settings are what the panel highlights on first open', async ({ page }) => {
-    const want = { layout: 'one-line', font: 'trebuchet', bgColor: '#f5f5dc', textColor: '#111111' };
+    const want = { layout: 'one-line', font: 'trebuchet', bgColor: '#ffffff', textColor: '#111111' };
     await openWidget(page, { settings: { ...want } });
     await press(page, 'settings');
     await expectOneSelected(page, want);
@@ -613,14 +670,17 @@ test.describe('single-file: Colors tab — two opacity sliders', () => {
   test('the Colors tab shows exactly two sliders, one under each swatch grid', async ({ page }) => {
     await openColors(page);
     await expect(page.locator('#panel-colors .color-slider')).toHaveCount(2);
-    // Section 1 = background: its swatch grid holds the bgColor tiles AND the bg slider.
+    // Section 1 = background: its swatch grid holds the 9 bgColor preset tiles (+ the picker
+    // swatch, no data-setting) AND the bg slider.
     const bgSection = page.locator('#panel-colors .color-section').nth(0);
-    await expect(bgSection.locator('.option[data-setting="bgColor"]')).toHaveCount(10);
+    await expect(bgSection.locator('.option[data-setting="bgColor"]')).toHaveCount(9);
+    await expect(bgSection.locator('#bg-color-picker')).toHaveCount(1);
     await expect(bgSection.locator('#opacity-slider')).toHaveCount(1);
     await expect(bgSection.locator('#text-opacity-slider')).toHaveCount(0);
-    // Section 2 = text: the textColor tiles AND the text slider.
+    // Section 2 = text: the 9 textColor preset tiles (+ the picker swatch) AND the text slider.
     const textSection = page.locator('#panel-colors .color-section').nth(1);
-    await expect(textSection.locator('.option[data-setting="textColor"]')).toHaveCount(10);
+    await expect(textSection.locator('.option[data-setting="textColor"]')).toHaveCount(9);
+    await expect(textSection.locator('#text-color-picker')).toHaveCount(1);
     await expect(textSection.locator('#text-opacity-slider')).toHaveCount(1);
     await expect(textSection.locator('#opacity-slider')).toHaveCount(0);
     // The slider sits BELOW its grid (greater top), proving the [grid][slider] order.
@@ -722,6 +782,452 @@ test.describe('single-file: Colors tab — two opacity sliders', () => {
   });
 });
 
+// ---- Colors tab: the custom color PICKER (wheel + square + hex, takeover) --------------------
+// The last cell of each swatch grid is a picker swatch (#bg-color-picker / #text-color-picker).
+// Clicking it opens a TAKEOVER (#app[data-colorpicker="open"]) with a [← Back] · title · [Save]
+// header over a hue wheel + SV square + hex box. Dragging/typing LIVE-PREVIEWS onto the preview
+// pill ONLY (inline --bg-rgb/--text-rgb override) — not committed/persisted until Save. Save
+// commits bgColor/textColor AND customBgColor/customTextColor via the normal onSelect path; Back
+// reverts. bgColor/textColor now hold ANY picked hex (the schema relaxed them off the enum).
+test.describe('single-file: Colors tab — the custom color picker', () => {
+  const stored = (page) => page.evaluate((k) => JSON.parse(localStorage.getItem(k) || '{}').settings || {}, STORAGE_KEY);
+  const rootVar = (page, name) => page.evaluate((n) => getComputedStyle(document.documentElement).getPropertyValue(n).replace(/\s/g, ''), name);
+  const previewBg = (page) => page.evaluate(() => getComputedStyle(document.querySelector('#settings-preview')).backgroundColor);
+  const appBg = (page) => page.evaluate(() => getComputedStyle(document.querySelector('#app')).backgroundColor);
+  const hexBox = (page) => page.locator('#cp-hex').inputValue();
+  // Drag the SV square to a fractional position (0..1 of its box) via a dispatched pointerdown.
+  const dragSquare = (page, fx, fy) => page.evaluate(({ fx, fy }) => {
+    const sq = document.querySelector('#cp-square');
+    const r = sq.getBoundingClientRect();
+    sq.dispatchEvent(new PointerEvent('pointerdown', { clientX: r.left + r.width * fx, clientY: r.top + r.height * fy, pointerId: 1, bubbles: true }));
+  }, { fx, fy });
+  const dragWheel = (page, deg) => page.evaluate((deg) => {
+    const w = document.querySelector('#cp-hue');
+    const r = w.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const rad = deg * Math.PI / 180, rr = r.width * 0.42;
+    w.dispatchEvent(new PointerEvent('pointerdown', { clientX: cx + rr * Math.cos(rad), clientY: cy + rr * Math.sin(rad), pointerId: 1, bubbles: true }));
+  }, deg);
+
+  async function openColors(page, opts) {
+    await openWidget(page, opts);
+    await page.setViewportSize({ width: 960, height: 560 });
+    await press(page, 'settings');
+    await expect(page.locator(SEL.app)).toHaveAttribute('data-settings', 'open');
+    await page.click('#tab-colors');
+    await expect(page.locator('#panel-colors')).toHaveClass(/is-active/);
+    return page;
+  }
+
+  test('clicking the bg picker swatch opens the takeover ("Choose background color", Back/Save)', async ({ page }) => {
+    await openColors(page);
+    await expect(page.locator(SEL.app)).not.toHaveAttribute('data-colorpicker', 'open');
+    await page.click('#bg-color-picker');
+    await expect(page.locator(SEL.app)).toHaveAttribute('data-colorpicker', 'open');
+    await expect(page.locator('#color-picker')).toBeVisible();
+    await expect(page.locator('#cp-title')).toHaveText('Choose background color');
+    await expect(page.locator('#cp-back')).toBeVisible();
+    await expect(page.locator('#cp-save')).toBeVisible();
+    // the tabs + tab panels are hidden by the takeover (same as the font browser)
+    await expect(page.locator('.settings-tabs')).toBeHidden();
+    await expect(page.locator('#panel-colors')).toBeHidden();
+    // the live preview stays visible so the picked color can be seen live
+    await expect(page.locator('#settings-preview')).toBeVisible();
+  });
+
+  test('the text picker swatch opens with the "Choose text color" title', async ({ page }) => {
+    await openColors(page);
+    await page.click('#text-color-picker');
+    await expect(page.locator(SEL.app)).toHaveAttribute('data-colorpicker', 'open');
+    await expect(page.locator('#cp-title')).toHaveText('Choose text color');
+  });
+
+  test('typing a hex live-previews WITHOUT committing; Save commits bgColor + customBgColor', async ({ page }) => {
+    await openColors(page);
+    const rawBefore = await page.evaluate((k) => localStorage.getItem(k), STORAGE_KEY);
+    await page.click('#bg-color-picker');
+    // type an off-palette hex -> the PREVIEW pill paints it live...
+    await page.locator('#cp-hex').fill('#3b82f6');
+    await expect.poll(() => previewBg(page)).toBe('rgb(59, 130, 246)');
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.querySelector('#cp-current')).backgroundColor)).toBe('rgb(59, 130, 246)');
+    // ...but the REAL pill (:root var) + storage are UNCHANGED until Save.
+    expect(await rootVar(page, '--bg-rgb')).toBe('0,0,0');
+    expect(await page.evaluate((k) => localStorage.getItem(k), STORAGE_KEY)).toBe(rawBefore); // nothing persisted yet
+    // Save commits: the real pill's --bg-rgb updates, bgColor AND customBgColor = the hex.
+    await page.click('#cp-save');
+    await expect(page.locator(SEL.app)).not.toHaveAttribute('data-colorpicker', 'open');
+    await expect.poll(() => rootVar(page, '--bg-rgb')).toBe('59,130,246');
+    await expect.poll(() => appBg(page)).toBe('rgb(59, 130, 246)');
+    await expect.poll(async () => (await stored(page)).bgColor).toBe('#3b82f6');
+    await expect.poll(async () => (await stored(page)).customBgColor).toBe('#3b82f6');
+    // the picker swatch is now the selected tile; no preset is selected.
+    await expect(page.locator('#bg-color-picker')).toHaveClass(/is-selected/);
+    await expect(page.locator('.option[data-setting="bgColor"].is-selected')).toHaveCount(0);
+  });
+
+  test('Back reverts the live preview and commits nothing', async ({ page }) => {
+    await openColors(page);
+    const rawBefore = await page.evaluate((k) => localStorage.getItem(k), STORAGE_KEY);
+    await page.click('#bg-color-picker');
+    await page.locator('#cp-hex').fill('#3b82f6');
+    await expect.poll(() => previewBg(page)).toBe('rgb(59, 130, 246)');
+    await page.click('#cp-back');
+    await expect(page.locator(SEL.app)).not.toHaveAttribute('data-colorpicker', 'open');
+    // preview reverted to the previously-active color (default black), nothing committed.
+    await expect.poll(() => previewBg(page)).toBe('rgb(0, 0, 0)');
+    expect(await rootVar(page, '--bg-rgb')).toBe('0,0,0');
+    expect(await page.evaluate((k) => localStorage.getItem(k), STORAGE_KEY)).toBe(rawBefore); // nothing persisted
+  });
+
+  test('text picker Save commits textColor + customTextColor and paints the numerals', async ({ page }) => {
+    await openColors(page);
+    await page.click('#text-color-picker');
+    await page.locator('#cp-hex').fill('#3b82f6');
+    await page.click('#cp-save');
+    await expect.poll(async () => (await stored(page)).textColor).toBe('#3b82f6');
+    await expect.poll(async () => (await stored(page)).customTextColor).toBe('#3b82f6');
+    await expect.poll(() => rootVar(page, '--text-rgb')).toBe('59,130,246');
+    expect(await page.evaluate(() => getComputedStyle(document.querySelector('#clock-time')).color)).toBe('rgb(59, 130, 246)');
+    await expect(page.locator('#text-color-picker')).toHaveClass(/is-selected/);
+  });
+
+  test('HSV<->hex round-trips: hex -> square/wheel markers reflect it; dragging -> hex updates', async ({ page }) => {
+    await openColors(page);
+    await page.click('#bg-color-picker');
+    // set a known hex -> the SV marker lands at (saturation, 1-value) and the hue marker moves.
+    await page.locator('#cp-hex').fill('#3b82f6'); // s≈0.76, v≈0.965, hue≈217°
+    const markers = await page.evaluate(() => ({
+      sl: parseFloat(document.querySelector('.cp-sv-marker').style.left),
+      st: parseFloat(document.querySelector('.cp-sv-marker').style.top),
+      hl: parseFloat(document.querySelector('.cp-hue-marker').style.left),
+    }));
+    expect(markers.sl).toBeGreaterThan(70); expect(markers.sl).toBeLessThan(82); // saturation ~76%
+    expect(markers.st).toBeLessThan(10); // value ~0.965 -> top ~3.5%
+    // now DRAG the square to the middle -> hex must change to a valid new #rrggbb, and the
+    // preview must agree with the hex box (same color from both paths). Blur the hex box first:
+    // a real pointer on the canvas blurs it, but a synthetic pointerdown doesn't, and the box is
+    // only re-synced when it isn't the focused element (so we don't fight a mid-type user).
+    await page.evaluate(() => document.querySelector('#cp-hex').blur());
+    await dragSquare(page, 0.5, 0.5);
+    const hx = await hexBox(page);
+    expect(hx).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(hx).not.toBe('#3b82f6');
+    const triplet = await page.evaluate((h) => { const n = parseInt(h.slice(1), 16); return ((n >> 16) & 255) + ', ' + ((n >> 8) & 255) + ', ' + (n & 255); }, hx);
+    await expect.poll(() => previewBg(page)).toBe('rgb(' + triplet + ')');
+    // dragging the hue wheel also changes the hex (hue component)
+    const before = await hexBox(page);
+    await dragWheel(page, 120); // toward green
+    expect(await hexBox(page)).not.toBe(before);
+  });
+
+  test('the picker swatch shows the remembered customBgColor even after a preset is picked', async ({ page }) => {
+    await openColors(page);
+    // mix + save a custom color
+    await page.click('#bg-color-picker');
+    await page.locator('#cp-hex').fill('#3b82f6');
+    await page.click('#cp-save');
+    await expect.poll(async () => (await stored(page)).customBgColor).toBe('#3b82f6');
+    // now pick a PRESET: the active color changes, but the remembered custom is untouched...
+    await page.locator('.option[data-setting="bgColor"][data-value="#000000"]').dispatchEvent('click');
+    await expect.poll(async () => (await stored(page)).bgColor).toBe('#000000');
+    await expect.poll(async () => (await stored(page)).customBgColor).toBe('#3b82f6'); // remembered
+    // the preset tile is selected, the picker tile is not...
+    await expect(page.locator('.option[data-setting="bgColor"][data-value="#000000"]')).toHaveClass(/is-selected/);
+    await expect(page.locator('#bg-color-picker')).not.toHaveClass(/is-selected/);
+    // ...yet the picker swatch chip STILL displays the remembered custom color.
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.querySelector('#bg-color-picker .swatch-chip')).backgroundColor)).toBe('rgb(59, 130, 246)');
+  });
+
+  test('a custom (off-preset) active color on open: picker selected, no preset selected', async ({ page }) => {
+    await openColors(page, { settings: { bgColor: '#123456', customBgColor: '#123456' } });
+    await expect(page.locator('#bg-color-picker')).toHaveClass(/is-selected/);
+    await expect(page.locator('.option[data-setting="bgColor"].is-selected')).toHaveCount(0);
+    // seeding reopen also re-seeds the picker to the remembered custom
+    await page.click('#bg-color-picker');
+    await expect.poll(() => hexBox(page)).toBe('#123456');
+  });
+
+  test('seeding the picker: opens on the remembered customBgColor, not the active preset', async ({ page }) => {
+    await openColors(page, { settings: { bgColor: '#000000', customBgColor: '#3b82f6' } });
+    await page.click('#bg-color-picker');
+    await expect.poll(() => hexBox(page)).toBe('#3b82f6'); // remembered, not the active #000000
+  });
+});
+
+// ---- Colors tab: Cutout (knockout) mode + per-slider labels + preview outline ----------------
+// Cutout is a Colors-tab checkbox UNDER the text-opacity slider. ON -> #app[data-cutout="true"]
+// and paintCutout() draws the numerals onto a <canvas> with globalCompositeOperation =
+// 'destination-out' (a CANVAS knockout), so the glyph pixels erase the opaque pill to alpha 0
+// (over the transparent Electron window the DESKTOP shows through — verifiable only on the host;
+// here we read back the canvas alpha / assert the CSS STATE). The text color is ignored (swatches grey out) and
+// the text-opacity slider becomes the cutout STRENGTH. Also covers the two new slider labels and
+// the preview's gray outline.
+test.describe('single-file: Colors tab — cutout mode, slider labels, preview outline', () => {
+  const TILE = (key, value) => `.option[data-setting="${key}"][data-value="${value}"]`;
+  const stored = (page) => page.evaluate((k) => JSON.parse(localStorage.getItem(k) || '{}').settings || {}, STORAGE_KEY);
+  const setSlider = (page, sel, v) => page.locator(sel).evaluate((el, val) => {
+    el.value = String(val); el.dispatchEvent(new Event('input', { bubbles: true }));
+  }, v);
+  const parseColor = (s) => {
+    const m = s.match(/rgba?\(([^)]+)\)/);
+    const p = m[1].split(',').map((x) => parseFloat(x));
+    return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+  };
+  // Read back the PILL's cutout canvas: classify every pixel by alpha (0 = a real transparent
+  // HOLE, 255 = opaque pill fill, in-between = a partial/faint erase) and sample a corner. This
+  // is the proof the CSS path couldn't give — real alpha-0 holes punched where the glyphs are.
+  const canvasStats = (page) => page.evaluate(() => {
+    const c = [...document.querySelector('#app').children]
+      .find((n) => n.tagName === 'CANVAS' && n.className.indexOf('et-cutout') !== -1);
+    if (!c) return null;
+    const ctx = c.getContext('2d');
+    const W = c.width, H = c.height;
+    if (!W || !H) return { W, H, holes: 0, filled: 0, partial: 0, corner: null, display: getComputedStyle(c).display };
+    const data = ctx.getImageData(0, 0, W, H).data;
+    let holes = 0, filled = 0, partial = 0;
+    for (let i = 3; i < data.length; i += 4) {
+      const a = data[i];
+      if (a === 0) holes++; else if (a === 255) filled++; else partial++;
+    }
+    const corner = [...ctx.getImageData(1, 1, 1, 1).data];
+    return { W, H, holes, filled, partial, corner, display: getComputedStyle(c).display };
+  });
+  const canvasDisplay = (page) => page.evaluate(() => {
+    const c = [...document.querySelector('#app').children]
+      .find((n) => n.tagName === 'CANVAS' && n.className.indexOf('et-cutout') !== -1);
+    return c ? getComputedStyle(c).display : 'absent';
+  });
+  const faceVisibility = (page) => page.evaluate(() => getComputedStyle(document.querySelector('#face')).visibility);
+  async function openColors(page, opts) {
+    await openWidget(page, opts);
+    await page.setViewportSize({ width: 960, height: 560 });
+    await press(page, 'settings');
+    await expect(page.locator(SEL.app)).toHaveAttribute('data-settings', 'open');
+    await page.click('#tab-colors');
+    await expect(page.locator('#panel-colors')).toHaveClass(/is-active/);
+    return page;
+  }
+
+  test('each opacity slider has a gray label above it ("Background Opacity" / "Text Opacity")', async ({ page }) => {
+    await openColors(page);
+    const labels = page.locator('#panel-colors .settings-section.slider-label');
+    await expect(labels).toHaveCount(2);
+    await expect(labels.nth(0)).toHaveText('Background Opacity');
+    await expect(labels.nth(1)).toHaveText('Text Opacity');
+    // Each label sits directly ABOVE its slider (smaller/equal top than the slider).
+    const order = await page.evaluate(() => {
+      const secs = [...document.querySelectorAll('#panel-colors .color-section')];
+      const bgLabel = secs[0].querySelector('.slider-label').getBoundingClientRect();
+      const bgSlider = document.querySelector('#opacity-slider').getBoundingClientRect();
+      const txLabel = secs[1].querySelector('.slider-label').getBoundingClientRect();
+      const txSlider = document.querySelector('#text-opacity-slider').getBoundingClientRect();
+      return bgLabel.top <= bgSlider.top && txLabel.top <= txSlider.top;
+    });
+    expect(order).toBe(true);
+  });
+
+  test('the preview pill has a gray outline/border so its bounds read against the dark panel', async ({ page }) => {
+    await openColors(page);
+    const b = await page.evaluate(() => {
+      const cs = getComputedStyle(document.querySelector('#settings-preview'));
+      return { w: cs.borderTopWidth, style: cs.borderTopStyle, color: cs.borderTopColor };
+    });
+    expect(parseFloat(b.w)).toBeGreaterThan(0);
+    expect(b.style).toBe('solid');
+    // ~50%-opacity gray
+    const c = parseColor(b.color);
+    expect(c.r).toBe(128); expect(c.g).toBe(128); expect(c.b).toBe(128);
+    expect(c.a).toBeCloseTo(0.5, 2);
+  });
+
+  test('the Cutout checkbox sits directly under the text-opacity slider (unchecked by default)', async ({ page }) => {
+    await openColors(page);
+    await expect(page.locator('#cutout-checkbox')).toHaveCount(1);
+    await expect(page.locator('#cutout-checkbox')).not.toBeChecked();
+    await expect(page.locator('.cutout-caption')).toHaveText('Cutout');
+    const under = await page.evaluate(() => {
+      const slider = document.querySelector('#text-opacity-slider').getBoundingClientRect();
+      const row = document.querySelector('#cutout-row').getBoundingClientRect();
+      // the cutout row is BELOW the text slider, and inside the text (second) color-section
+      const inText = document.querySelectorAll('#panel-colors .color-section')[1].contains(document.querySelector('#cutout-row'));
+      return row.top >= slider.top && inText;
+    });
+    expect(under).toBe(true);
+  });
+
+  test('toggling Cutout ON builds the canvas, hides (keeps-in-layout) the face + makes #app bg transparent; OFF reverts', async ({ page }) => {
+    await openColors(page);
+    // OFF by default: no canvas, face visible, #app keeps its background.
+    await expect(page.locator(SEL.app)).toHaveAttribute('data-cutout', 'false');
+    expect(await canvasDisplay(page)).toMatch(/absent|none/);
+    expect(await faceVisibility(page)).toBe('visible');
+    // Turn cutout ON.
+    await page.locator('#cutout-checkbox').check();
+    await expect(page.locator(SEL.app)).toHaveAttribute('data-cutout', 'true');
+    // Canvas now present + displayed (the visible pill surface).
+    await expect.poll(async () => (await canvasStats(page)) && (await canvasStats(page)).display).toBe('block');
+    // The DOM face is HIDDEN but KEPT IN LAYOUT (so paintCutout can measure it): visibility
+    // hidden, yet its readouts still report a real bounding box.
+    expect(await faceVisibility(page)).toBe('hidden');
+    expect(await page.evaluate(() => { const r = document.querySelector('#clock-time').getBoundingClientRect(); return r.width > 0 && r.height > 0; })).toBe(true);
+    // #app's own background is transparent in cutout mode (the canvas provides the fill).
+    expect(await page.evaluate(() => getComputedStyle(document.querySelector('#app')).backgroundColor)).toBe('rgba(0, 0, 0, 0)');
+    // persisted via the normal path
+    await expect.poll(async () => (await stored(page)).cutout).toBe(true);
+    // Turn it OFF -> canvas hidden, face visible again, #app background restored.
+    await page.locator('#cutout-checkbox').uncheck();
+    await expect(page.locator(SEL.app)).toHaveAttribute('data-cutout', 'false');
+    await expect.poll(() => canvasDisplay(page)).toBe('none');
+    expect(await faceVisibility(page)).toBe('visible');
+    await expect.poll(async () => (await stored(page)).cutout).toBe(false);
+  });
+
+  test('cutout punches REAL transparent holes: glyph pixels are alpha 0 over an opaque bg-colored fill', async ({ page }) => {
+    // Seed a NON-black background so a non-glyph (filled) pixel unambiguously proves the canvas
+    // is painted with the configured pill color, while glyph pixels are genuinely transparent.
+    await openColors(page, { settings: { bgColor: '#1a1a2e' } }); // rgb(26,26,46)
+    await page.locator('#cutout-checkbox').check();
+    await expect(page.locator(SEL.app)).toHaveAttribute('data-cutout', 'true');
+    // Real holes exist (hundreds of fully-transparent glyph pixels), and the pill is mostly filled.
+    await expect.poll(async () => { const s = await canvasStats(page); return s ? s.holes : 0; }).toBeGreaterThan(100);
+    const s = await canvasStats(page);
+    expect(s.filled).toBeGreaterThan(s.holes); // the pill is mostly solid; the holes are the glyphs
+    // A non-glyph corner pixel is the configured background color, fully opaque...
+    expect(s.corner[3]).toBe(255);
+    expect([s.corner[0], s.corner[1], s.corner[2]]).toEqual([26, 26, 46]);
+    // ...while the glyph region genuinely shows alpha-0 holes (this is what CSS could NOT do).
+    expect(s.holes).toBeGreaterThan(0);
+  });
+
+  test('text-opacity is the cutout STRENGTH: full = alpha-0 holes, half = partial (faint) erase', async ({ page }) => {
+    await openColors(page);
+    await page.locator('#cutout-checkbox').check();
+    await expect(page.locator(SEL.app)).toHaveAttribute('data-cutout', 'true');
+    // Full strength: real alpha-0 holes.
+    await setSlider(page, '#text-opacity-slider', 1);
+    await expect.poll(async () => { const s = await canvasStats(page); return s ? s.holes : 0; }).toBeGreaterThan(100);
+    // Half strength: the glyph pixels are only PARTIALLY erased (alpha ~127), so they become
+    // "partial" pixels, not full alpha-0 holes — a fainter cutout.
+    await setSlider(page, '#text-opacity-slider', 0.5);
+    await expect.poll(async () => { const s = await canvasStats(page); return s ? s.partial : 0; }).toBeGreaterThan(100);
+    const half = await canvasStats(page);
+    expect(half.holes).toBeLessThan(half.partial); // few/no full holes at half strength
+  });
+
+  test('holes ALIGN with the measured text boxes across layouts (incl. the separator layouts)', async ({ page }) => {
+    // The knockout is drawn from MEASURED DOM run rects, so the holes must land inside the
+    // readouts' boxes — no gross drift from the layout/fit. For each layout we count alpha-0
+    // hole pixels that fall OUTSIDE the (slightly inflated) union of the readout rects; a tiny
+    // fraction is tolerated (anti-aliased glyph edges, canvas vs. tabular-nums advance drift),
+    // but a misaligned layout would spill holes well outside the boxes.
+    await openColors(page);
+    await page.locator('#cutout-checkbox').check();
+    await expect(page.locator(SEL.app)).toHaveAttribute('data-cutout', 'true');
+
+    const outsideFractionFor = async (layout) => {
+      await page.evaluate((l) => window.EpisodeTimerBridge.setSettings({ layout: l }), layout);
+      await expect(page.locator(SEL.app)).toHaveAttribute('data-layout', layout);
+      await advance(page, 200); // let the fit settle + redrawCutout run
+      return page.evaluate(() => {
+        const app = document.querySelector('#app');
+        const appRect = app.getBoundingClientRect();
+        const c = [...app.children].find((n) => n.tagName === 'CANVAS' && n.className.indexOf('et-cutout') !== -1);
+        const ctx = c.getContext('2d');
+        const dpr = window.devicePixelRatio || 1;
+        // Inflated union of the readout run boxes (CSS px relative to #app).
+        const face = document.querySelector('#face');
+        const boxes = [];
+        face.querySelectorAll('*').forEach((n) => {
+          const cs = getComputedStyle(n);
+          if (cs.display === 'none') return;
+          if (n.children.length) {
+            // a container: include it only if it owns a ::before glyph (the separator)
+            const pb = getComputedStyle(n, '::before').content;
+            if (!pb || pb === 'none' || pb === 'normal') return;
+          }
+          const r = n.getBoundingClientRect();
+          if (!r.width || !r.height) return;
+          const padX = r.height * 0.35, padY = r.height * 0.25; // slop for baseline + advance drift
+          boxes.push({ l: r.left - appRect.left - padX, t: r.top - appRect.top - padY, r: r.right - appRect.left + padX, b: r.bottom - appRect.top + padY });
+        });
+        const inAny = (x, y) => boxes.some((b) => x >= b.l && x <= b.r && y >= b.t && y <= b.b);
+        const data = ctx.getImageData(0, 0, c.width, c.height).data;
+        let holes = 0, outside = 0;
+        for (let p = 0; p < c.width * c.height; p++) {
+          if (data[p * 4 + 3] !== 0) continue;
+          holes++;
+          const cx = (p % c.width) / dpr, cy = Math.floor(p / c.width) / dpr;
+          if (!inAny(cx, cy)) outside++;
+        }
+        return { holes, outside };
+      });
+    };
+
+    for (const layout of ['stack', 'one-line', 'dash', 'clock-left', 'split']) {
+      const { holes, outside } = await outsideFractionFor(layout);
+      expect(holes, `${layout}: expected real holes`).toBeGreaterThan(100);
+      expect(outside / holes, `${layout}: too many holes fall outside the measured text boxes`).toBeLessThan(0.02);
+    }
+  });
+
+  test('the live preview also gets a knockout canvas in cutout mode (best-effort; reveals the panel backdrop)', async ({ page }) => {
+    await openColors(page);
+    await page.locator('#cutout-checkbox').check();
+    await expect(page.locator(SEL.app)).toHaveAttribute('data-cutout', 'true');
+    // The in-page preview pill is a descendant of #app; it gets its OWN direct-child canvas
+    // (never the pill's — directCutoutCanvas is scoped per host).
+    await expect.poll(() => page.evaluate(() => {
+      const pv = document.querySelector('#settings-preview');
+      if (!pv) return 'no-preview';
+      const c = [...pv.children].find((n) => n.tagName === 'CANVAS' && n.className.indexOf('et-cutout') !== -1);
+      return c ? getComputedStyle(c).display : 'absent';
+    })).toBe('block');
+  });
+
+  test('cutout ON greys + disables the text-color swatches (text-opacity slider stays active)', async ({ page }) => {
+    await openColors(page);
+    const firstTextSwatch = page.locator('.option[data-setting="textColor"]').first();
+    // enabled when cutout is off
+    expect(await firstTextSwatch.evaluate((el) => el.disabled)).toBe(false);
+    await page.locator('#cutout-checkbox').check();
+    // all text swatches disabled + greyed (opacity reduced)
+    const info = await page.evaluate(() => {
+      const sw = [...document.querySelectorAll('.option[data-setting="textColor"]')];
+      return {
+        allDisabled: sw.every((e) => e.disabled),
+        allGrey: sw.every((e) => parseFloat(getComputedStyle(e).opacity) < 0.5),
+        bgStillEnabled: [...document.querySelectorAll('.option[data-setting="bgColor"]')].every((e) => !e.disabled),
+        textPickerDisabled: document.querySelector('#text-color-picker').disabled,
+        bgPickerEnabled: !document.querySelector('#bg-color-picker').disabled,
+        sliderEnabled: !document.querySelector('#text-opacity-slider').disabled,
+      };
+    });
+    expect(info.allDisabled).toBe(true);
+    expect(info.allGrey).toBe(true);
+    expect(info.textPickerDisabled).toBe(true); // the text PICKER swatch is greyed too
+    expect(info.bgPickerEnabled).toBe(true);    // the bg picker stays active
+    expect(info.bgStillEnabled).toBe(true); // bg swatches unaffected
+    expect(info.sliderEnabled).toBe(true);  // text-opacity (strength) stays active
+    // re-enabled when cutout goes off
+    await page.locator('#cutout-checkbox').uncheck();
+    expect(await firstTextSwatch.evaluate((el) => el.disabled)).toBe(false);
+  });
+
+  test('cutout persists and the checkbox + data-cutout reflect it on reload (holes drawn on seeded-ON open)', async ({ page }) => {
+    await openColors(page, { settings: { cutout: true } });
+    // seeded ON: applied + reflected on first open (data-cutout + the checked box).
+    await expect(page.locator(SEL.app)).toHaveAttribute('data-cutout', 'true');
+    await expect(page.locator('#cutout-checkbox')).toBeChecked();
+    // real holes are drawn without any further interaction
+    await expect.poll(async () => { const s = await canvasStats(page); return s ? s.holes : 0; }).toBeGreaterThan(100);
+    // flip off, reload, confirm it stuck
+    await page.locator('#cutout-checkbox').uncheck();
+    await expect.poll(async () => (await stored(page)).cutout).toBe(false);
+    await page.reload();
+    await expect(page.locator(SEL.app)).toHaveAttribute('data-cutout', 'false');
+  });
+});
+
 // ---- Font tab: the Custom tile + system-font browser ----------------------------------------
 // The curated Font grid stays the clean default picker; its FIRST tile is "Custom", which opens
 // a system-font browser that enumerates installed families via queryLocalFonts(). We STUB
@@ -748,6 +1254,7 @@ test.describe('single-file: Font tab Custom tile + system-font browser', () => {
   const customSwatchFont = (page) => page.evaluate(() => document.querySelector('#font-custom-swatch').style.fontFamily);
   const TILE_FONT = (value) => `.option[data-setting="font"][data-value="${value}"]`;
   const storedCustom = (page) => page.evaluate((k) => (JSON.parse(localStorage.getItem(k) || '{}').settings || {}).customFont, STORAGE_KEY);
+  const storedUseCustom = (page) => page.evaluate((k) => (JSON.parse(localStorage.getItem(k) || '{}').settings || {}).useCustomFont, STORAGE_KEY);
 
   async function openFontTab(page, opts = {}) {
     await openWidget(page, { queryLocalFonts: FACES, ...opts });
@@ -827,7 +1334,7 @@ test.describe('single-file: Font tab Custom tile + system-font browser', () => {
     await expect(page.locator(SEL.app)).toHaveAttribute('data-fontbrowser', 'open');
   });
 
-  test('Save commits: applies to the real widget (--font + customFont), Custom tile selected, its sample in that family', async ({ page }) => {
+  test('Save commits: applies to the real widget (--font + customFont + useCustomFont), Custom tile selected, its sample in that family', async ({ page }) => {
     await openFontTab(page);
     await page.click('#font-custom-tile');
     await page.click('.fb-card[data-family="Gamma Mono"]');
@@ -836,8 +1343,9 @@ test.describe('single-file: Font tab Custom tile + system-font browser', () => {
     await expect(page.locator('#font-browser')).toBeHidden();
     // the real --font now leads with the chosen family (available via the cached list)...
     await expect.poll(() => liveFont(page)).toContain('"Gamma Mono"');
-    // ...and it persisted as customFont.
+    // ...and it persisted as customFont AND flipped the switch on (useCustomFont).
     await expect.poll(() => storedCustom(page)).toBe('Gamma Mono');
+    await expect.poll(() => storedUseCustom(page)).toBe(true);
     // the Custom tile is the selected one, and NO curated tile is selected
     await expect(page.locator('#font-custom-tile')).toHaveClass(/is-selected/);
     await expect(page.locator('#font-custom-tile')).toHaveAttribute('aria-pressed', 'true');
@@ -864,30 +1372,49 @@ test.describe('single-file: Font tab Custom tile + system-font browser', () => {
     await expect(page.locator(TILE_FONT('system'))).toHaveClass(/is-selected/);
   });
 
-  test('custom active -> NO curated tile is selected; picking a curated tile clears customFont + de-selects Custom', async ({ page }) => {
+  test('custom active -> NO curated tile is selected; picking a curated tile flips useCustomFont OFF but REMEMBERS customFont + de-selects Custom', async ({ page }) => {
     await openFontTab(page);
     // make a custom font genuinely active via the browser (Save populates the availability cache)
     await page.click('#font-custom-tile');
     await page.click('.fb-card[data-family="Gamma Mono"]');
     await page.click('#fb-save');
     await expect.poll(() => storedCustom(page)).toBe('Gamma Mono');
+    await expect.poll(() => storedUseCustom(page)).toBe(true);
     // custom active -> Custom tile selected, zero curated tiles selected
     await expect(page.locator('#font-custom-tile')).toHaveClass(/is-selected/);
     await expect(page.locator('.option[data-setting="font"].is-selected')).toHaveCount(0);
-    // now pick a curated tile -> clears customFont, de-selects Custom, selects the curated tile
+    // now pick a curated tile -> switch OFF, de-select Custom, select the curated tile, apply serif
     await page.locator(TILE_FONT('serif')).dispatchEvent('click');
-    await expect.poll(() => storedCustom(page)).toBe('');
+    await expect.poll(() => storedUseCustom(page)).toBe(false);
     await expect.poll(() => liveFont(page)).toMatch(/Georgia|serif/);
     await expect(page.locator('#font-custom-tile')).not.toHaveClass(/is-selected/);
     await expect(page.locator('#font-custom-tile')).toHaveAttribute('aria-pressed', 'false');
     await expect(page.locator(TILE_FONT('serif'))).toHaveClass(/is-selected/);
+    // ...but customFont is REMEMBERED (not wiped), and the Custom tile's sample still shows it.
+    await expect.poll(() => storedCustom(page)).toBe('Gamma Mono');
+    expect(await customSwatchFont(page)).toContain('Gamma Mono');
+    // re-opening the browser pre-selects the remembered family AND scrolls it into view (centered
+    // in the grid's own scroll viewport, not off-screen) — reliable on a fresh open.
+    await page.click('#font-custom-tile');
+    await expect(page.locator('.fb-card[data-family="Gamma Mono"]')).toHaveClass(/is-selected/);
+    const within = await page.evaluate(() => {
+      const g = document.querySelector('#fb-grid').getBoundingClientRect();
+      const c = document.querySelector('.fb-card.is-selected').getBoundingClientRect();
+      // the selected card's vertical center sits inside the grid's visible viewport
+      const mid = (c.top + c.bottom) / 2;
+      return mid >= g.top && mid <= g.bottom;
+    });
+    expect(within).toBe(true);
   });
 
-  test('picking a curated tile clears any custom font even before the browser was opened', async ({ page }) => {
+  test('picking a curated tile REMEMBERS the custom font even when it was never switched on', async ({ page }) => {
+    // Seeded customFont with useCustomFont default false (curated 'system' is the active face).
     await openFontTab(page, { settings: { customFont: 'Gamma Mono' } });
     await page.locator(TILE_FONT('serif')).dispatchEvent('click');
-    await expect.poll(() => storedCustom(page)).toBe('');
+    // the curated pick applies, flips the switch off (already off), and leaves customFont intact.
+    await expect.poll(() => storedUseCustom(page)).toBe(false);
     await expect.poll(() => liveFont(page)).toMatch(/Georgia|serif/);
+    await expect.poll(() => storedCustom(page)).toBe('Gamma Mono');
   });
 
   test('the card grid scrolls INDEPENDENTLY (its own overflow-y), not the whole panel', async ({ page }) => {
@@ -919,6 +1446,38 @@ test.describe('single-file: Font tab Custom tile + system-font browser', () => {
     const disabled = await page.locator('#font-custom-tile').evaluate((el) => el.disabled);
     expect(disabled).toBe(true);
   });
+
+  // Feature C: every tile's "10:42" sample must stay INSIDE its card (no glyph bleeding past
+  // the edges), for ALL fonts — proven by measuring the sample's rendered box against the card's
+  // box with a padding margin. The per-tile fit (fitFontSwatches -> shrink-to-contain) is what
+  // guarantees this across the wide faces (System/Serif/Helvetica) that used to overflow.
+  test('every tile sample fits inside its card with padding (no bleed), across all fonts', async ({ page }) => {
+    await openFontTab(page);
+    const MARGIN = 7; // px tolerance; the fit targets ~12px inset, so this is comfortably safe
+    // The fit runs a frame after the Font tab activates, so poll until the (binding) horizontal
+    // axis is contained for every tile — that also confirms the fit actually ran.
+    const measure = () => page.evaluate((m) => {
+      const out = [];
+      document.querySelectorAll('#panel-font .option-font').forEach((card) => {
+        const sw = card.querySelector('.font-swatch'); if (!sw) return;
+        const c = card.getBoundingClientRect(), s = sw.getBoundingClientRect();
+        out.push({
+          label: ((card.querySelector('.option-caption') || {}).textContent || card.id).trim(),
+          hOk: s.left >= c.left + m && s.right <= c.right - m,
+          vOk: s.top >= c.top + m && s.bottom <= c.bottom - m,
+        });
+      });
+      return out;
+    }, MARGIN);
+    await expect.poll(async () => (await measure()).every((r) => r.hOk)).toBe(true);
+    // Now assert BOTH axes per tile with a legible per-font failure message.
+    const results = await measure();
+    expect(results.length).toBe(10); // 9 curated presets + the Custom tile
+    for (const r of results) {
+      expect(r.hOk, `${r.label}: sample bleeds past the card horizontally`).toBe(true);
+      expect(r.vOk, `${r.label}: sample bleeds past the card vertically`).toBe(true);
+    }
+  });
 });
 
 // ---- Missing-font fallback: never render a blank/broken face --------------------------------
@@ -926,7 +1485,9 @@ test.describe('single-file: customFont missing-font fallback', () => {
   const BOGUS = 'Definitely Not A Real Font 12345';
 
   test('a customFont that is not installed falls back to the curated default (no throw, visible face)', async ({ page }) => {
-    await openWidget(page, { settings: { customFont: BOGUS, font: 'system' } });
+    // useCustomFont ON + a bogus family: this is the branch where the switch is on but the
+    // family isn't installed, which must still fall back to the curated face (never blank).
+    await openWidget(page, { settings: { customFont: BOGUS, useCustomFont: true, font: 'system' } });
     expect(page.pageErrors).toEqual([]); // no throw
     // --font resolves to the curated default stack, NOT the bogus family.
     const f = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--font').trim());
@@ -938,8 +1499,8 @@ test.describe('single-file: customFont missing-font fallback', () => {
     expect(rendered).not.toContain(BOGUS);
   });
 
-  test('an uninstalled custom font does NOT select the Custom tile; the curated tile stays selected', async ({ page }) => {
-    await openWidget(page, { settings: { customFont: BOGUS, font: 'serif' } });
+  test('an uninstalled custom font (switch ON) does NOT select the Custom tile; the curated tile stays selected', async ({ page }) => {
+    await openWidget(page, { settings: { customFont: BOGUS, useCustomFont: true, font: 'serif' } });
     await page.setViewportSize({ width: 960, height: 640 });
     await press(page, 'settings');
     await page.click('#tab-font');
@@ -965,10 +1526,10 @@ test.describe('single-file: customFont availability + cache', () => {
 
   for (const fam of ['Georgia', 'Arial', 'Menlo']) {
     test(`cold load (no cache): installed "${fam}" is detected by measurement and applied`, async ({ page }) => {
-      await openWidget(page, { settings: { customFont: fam, font: 'system' } }); // no queryLocalFonts stub -> knownFamilies stays null
+      await openWidget(page, { settings: { customFont: fam, useCustomFont: true, font: 'system' } }); // no queryLocalFonts stub -> knownFamilies stays null
       expect(page.pageErrors).toEqual([]);
       await expect.poll(() => liveFont(page)).toContain('"' + fam + '"'); // measurement kept the installed family
-      const active = await page.evaluate((f) => window.EpisodeTimerSettings.activeFontInfo({ font: 'system', customFont: f }), fam);
+      const active = await page.evaluate((f) => window.EpisodeTimerSettings.activeFontInfo({ font: 'system', customFont: f, useCustomFont: true }), fam);
       expect(active.customActive).toBe(true);
       expect(active.customName).toBe(fam);
     });
@@ -978,7 +1539,7 @@ test.describe('single-file: customFont availability + cache', () => {
     // customFont = Georgia (installed). The font browser enumerates a SUBSET that OMITS Georgia
     // (a realistic "user shared only some fonts" result). A later settings change re-applies.
     await openWidget(page, {
-      settings: { customFont: 'Georgia', font: 'system' },
+      settings: { customFont: 'Georgia', useCustomFont: true, font: 'system' },
       queryLocalFonts: [{ family: 'Arial' }], // subset WITHOUT Georgia
     });
     await page.setViewportSize({ width: 960, height: 640 });

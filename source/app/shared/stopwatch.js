@@ -1,4 +1,4 @@
-// src/shared/stopwatch.js
+// source/app/shared/stopwatch.js
 // -----------------------------------------------------------------------------
 // The episode stopwatch state machine. Pure, framework-free, no DOM, no Node.
 //

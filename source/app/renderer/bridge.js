@@ -1,4 +1,4 @@
-// src/renderer/bridge.js
+// source/app/renderer/bridge.js
 // -----------------------------------------------------------------------------
 // One API, two environments. The rest of the renderer (app.js) never touches
 // window.episodeTimer or localStorage directly — it goes through
@@ -31,9 +31,9 @@
       onSettingsChanged: function (cb) { return api.onSettingsChanged(cb); },
       resizeBy: function (dx, dy) { api.resizeBy(dx, dy); },
       quit: function () { api.quit(); },
-      setSettingsOpen: function (open) { api.setSettingsOpen(open); },
+      // Ask main to open/focus the SEPARATE settings window (Electron only).
+      openSettings: function () { api.openSettings(); },
       onTimerCommand: function (cb) { return api.onTimerCommand(cb); },
-      onOpenSettings: function (cb) { return api.onOpenSettings(cb); },
       // Main's cursor-poll hover fallback (the drag region swallows DOM mouseenter/leave).
       onHoverChanged: function (cb) { return api.onHoverChanged(cb); }
     };
@@ -92,13 +92,16 @@
       },
 
       // No OS window in a tab — these simply do nothing (the panel already
-      // overlays the page in browser mode, so there's nothing to grow).
+      // overlays the page in browser mode, so there's nothing to grow/move).
       resizeBy: function () {},
       quit: function () {},
       setSettingsOpen: function () {},
-      // No tray in a browser tab — these never fire. Return a no-op unsubscribe.
+      // Browser mode opens the IN-PAGE panel directly (app.js openSettings() ->
+      // panel.open()), so this external-window opener is never reached here; keep a
+      // no-op so the API shape matches the Electron bridge.
+      openSettings: function () {},
+      // No tray in a browser tab — this never fires. Return a no-op unsubscribe.
       onTimerCommand: function () { return function () {}; },
-      onOpenSettings: function () { return function () {}; },
       // No cursor poll in a browser tab: a plain page has no drag region, so the renderer's
       // own DOM mouseenter/leave drive data-hover directly. No-op subscription.
       onHoverChanged: function () { return function () {}; }

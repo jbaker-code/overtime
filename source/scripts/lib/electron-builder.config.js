@@ -14,9 +14,18 @@ module.exports = {
   productName: 'Overtime',
   directories: {
     output: path.join(SCRATCH, 'electron-builder'),
-    buildResources: 'build',
+    buildResources: 'source/electron/build',
   },
-  files: ['main.js', 'preload.js', 'src/**/*', 'package.json'],
+  // Globs are relative to projectDir (the repo root). Mirrors the pre-reorg set
+  // (main + preload + the two main-process modules + renderer/shared), now under source/.
+  files: [
+    'source/electron/main.js',
+    'source/electron/preload.js',
+    'source/electron/config.js',
+    'source/electron/window-state.js',
+    'source/app/**/*',
+    'package.json',
+  ],
   asar: true,
   npmRebuild: false, // no native deps; skip the slow step
   compression: 'normal',

@@ -17,16 +17,16 @@
   "bugs": {
     "url": "https://github.com/jbaker-code/overtime/issues"
   },
-  "main": "main.js",
+  "main": "source/electron/main.js",
   "scripts": {
     "start": "electron .",
-    "test": "playwright test",
-    "build": "node scripts/build-all.js",
-    "build:mac": "node scripts/build-mac.js",
-    "build:win": "node scripts/build-win.js",
-    "build:single": "node scripts/build-single-file.js",
-    "build:source": "node scripts/build-source-zip.js",
-    "clean": "node scripts/clean.js"
+    "test": "playwright test --config tests/playwright.config.js",
+    "build": "node source/scripts/build-all.js",
+    "build:mac": "node source/scripts/build-mac.js",
+    "build:win": "node source/scripts/build-win.js",
+    "build:single": "node source/scripts/build-single-file.js",
+    "build:source": "node source/scripts/build-source-zip.js",
+    "clean": "node source/scripts/clean.js"
   },
   "devDependencies": {
     "electron": "^34.0.0",

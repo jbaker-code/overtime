@@ -33,7 +33,7 @@ function resolveElectron() {
 /** null when Electron is usable here (and the opt-out env var is unset); otherwise the skip reason. */
 function electronUnavailableReason() {
   if (process.env.EPISODE_TIMER_SKIP_ELECTRON) return 'EPISODE_TIMER_SKIP_ELECTRON is set';
-  if (!fs.existsSync(path.join(ROOT, 'main.js'))) return 'main.js not found';
+  if (!fs.existsSync(path.join(ROOT, 'source', 'electron', 'main.js'))) return 'source/electron/main.js not found';
   return resolveElectron().reason || null;
 }
 

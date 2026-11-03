@@ -3,7 +3,7 @@
 > **Developer archive.** The original implementation plan, written by the planning agent
 > before any code existed (back when the app was *Episode Timer* under `tools/clock/`).
 > It's a historical snapshot — parts were superseded during the build, so for the app as
-> it actually shipped see [`../GUIDE.md`](../GUIDE.md), [`../../ARCHITECTURE.md`](../../ARCHITECTURE.md),
+> it actually shipped see [`../GUIDE.md`](../GUIDE.md), [`../ARCHITECTURE.md`](../ARCHITECTURE.md),
 > and [`DECISIONS.md`](./DECISIONS.md). Kept for the full paper trail.
 
 > Companion to [`PRD.md`](./PRD.md) (the *what*). This file is the *how*: file layout,

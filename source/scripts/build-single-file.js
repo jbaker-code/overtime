@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * build:single — inline src/renderer/index.html (+ CSS + JS) into ONE index.html.
+ * build:single — inline source/app/renderer/index.html (+ CSS + JS) into ONE index.html.
  * Output: dist/single-file/index.html   (or --out <path> to write elsewhere, e.g. tests)
  */
 const fs = require('fs');
@@ -20,7 +20,7 @@ function parseOut(argv) {
 
 log.run(async () => {
   if (!process.argv.includes('--out')) log.info('Build folder: ' + require('./lib/paths').BUILD_DIR);
-  const srcHtml = path.join(ROOT, 'src', 'renderer', 'index.html');
+  const srcHtml = path.join(ROOT, 'source', 'app', 'renderer', 'index.html');
   if (!fs.existsSync(srcHtml)) throw new Error(`Renderer page not found: ${srcHtml}`);
 
   const banner = [

@@ -1,10 +1,10 @@
 // PRD acceptance: "Config must tolerate a missing or corrupt file - fall back to sensible
 // defaults, never crash" + "forward-looking settings object".  PLAN §2.4.  Project: unit.
 const { test, expect } = require('@playwright/test');
-const cs = require('../src/shared/config-schema.js');
+const cs = require('../source/app/shared/config-schema.js');
 
 const D = () => JSON.parse(JSON.stringify(cs.DEFAULT_CONFIG));
-const SETTINGS = ['layout', 'font', 'customFont', 'bgColor', 'textColor', 'opacity', 'textOpacity', 'showSeconds', 'hour12', 'alwaysOnTop', 'showClock', 'showStopwatch'];
+const SETTINGS = ['layout', 'font', 'customFont', 'useCustomFont', 'bgColor', 'textColor', 'customBgColor', 'customTextColor', 'opacity', 'textOpacity', 'cutout', 'showSeconds', 'hour12', 'alwaysOnTop', 'showClock', 'showStopwatch'];
 
 test.describe('config-schema: defaults', () => {
   test('DEFAULT_CONFIG matches the frozen schema', () => {
@@ -13,15 +13,19 @@ test.describe('config-schema: defaults', () => {
     expect(d.schemaVersion).toBe(1);
     expect(Object.keys(d.settings).sort()).toEqual([...SETTINGS].sort());
     expect(d.settings).toMatchObject({
-      layout: 'stack', font: 'system', customFont: '', bgColor: '#000000', textColor: '#ffffff', opacity: 1.0, textOpacity: 1.0, showSeconds: false, hour12: true, alwaysOnTop: true, showClock: true, showStopwatch: true,
+      layout: 'stack', font: 'system', customFont: '', useCustomFont: false, bgColor: '#000000', textColor: '#ffffff', customBgColor: '', customTextColor: '', opacity: 1.0, textOpacity: 1.0, cutout: false, showSeconds: false, hour12: true, alwaysOnTop: true, showClock: true, showStopwatch: true,
     });
     expect(d.timer).toMatchObject({ status: 'stopped', accumulatedMs: 0, runningSince: null });
   });
-  test('SETTINGS_KEYS lists exactly the settings (incl. customFont + textOpacity, no `theme`); count is 12', () => {
+  test('SETTINGS_KEYS lists exactly the settings (incl. customBgColor + customTextColor, no `theme`); count is 16', () => {
     expect([...cs.SETTINGS_KEYS].sort()).toEqual([...SETTINGS].sort());
-    expect(cs.SETTINGS_KEYS).toHaveLength(12); // was 11; textOpacity brought it to 12
+    expect(cs.SETTINGS_KEYS).toHaveLength(16); // was 14; customBgColor + customTextColor brought it to 16
     expect(cs.SETTINGS_KEYS).toContain('customFont');
+    expect(cs.SETTINGS_KEYS).toContain('useCustomFont');
     expect(cs.SETTINGS_KEYS).toContain('textOpacity');
+    expect(cs.SETTINGS_KEYS).toContain('cutout');
+    expect(cs.SETTINGS_KEYS).toContain('customBgColor');
+    expect(cs.SETTINGS_KEYS).toContain('customTextColor');
     expect(cs.SETTINGS_KEYS).not.toContain('theme');
   });
   test('min window size: MIN_WIDTH stays 100, MIN_HEIGHT dropped to 20 (~1/3 of the old 60)', () => {
@@ -37,8 +41,15 @@ test.describe('config-schema: defaults', () => {
     expect(cs.LAYOUTS).toEqual(['stack', 'stopwatch-top', 'clock-left', 'side-by-side', 'split', 'one-line', 'dash', 'clock-hero', 'stopwatch-hero', 'centered-gap']);
     expect(cs.FONTS).toEqual(['system', 'mono', 'serif', 'helvetica', 'times', 'trebuchet', 'verdana', 'palatino', 'condensed']);
     expect(cs.FONTS).not.toContain('courier'); // removed (Mono already covers monospace)
-    expect(cs.BG_COLORS).toHaveLength(10);
-    expect(cs.TEXT_COLORS).toHaveLength(10);
+    // The preset palettes are now 9 each (the 10th grid cell is the color-picker swatch, a
+    // UI-only tile that is NOT in the enum).
+    expect(cs.BG_COLORS).toEqual(['#000000', '#1a1a2e', '#0f3d3e', '#2d132c', '#1b2a4a', '#3a2d1b', '#2c2c2c', '#004e64', '#ffffff']);
+    expect(cs.TEXT_COLORS).toEqual(['#ffffff', '#9ca3af', '#111111', '#f5c518', '#f97316', '#4ade80', '#60a5fa', '#a78bfa', '#ff6b6b']);
+    expect(cs.BG_COLORS).toHaveLength(9);
+    expect(cs.TEXT_COLORS).toHaveLength(9);
+    expect(cs.BG_COLORS).not.toContain('#f5f5dc'); // beige dropped
+    expect(cs.TEXT_COLORS).not.toContain('#f0f0f0'); // the two near-whites dropped
+    expect(cs.TEXT_COLORS).not.toContain('#e0e0e0');
     for (const c of [...cs.BG_COLORS, ...cs.TEXT_COLORS]) expect(c).toMatch(/^#[0-9a-f]{6}$/i);
     expect(cs.DEFAULT_CONFIG.settings.layout).toBe(cs.LAYOUTS[0]);
     expect(cs.DEFAULT_CONFIG.settings.bgColor).toBe(cs.BG_COLORS[0]);
@@ -108,7 +119,7 @@ test.describe('config-schema: merge, validation, clamp', () => {
     // opacity still behaves on its own (textOpacity default fills in)
     expect(cs.normalizeConfig({ schemaVersion: 1, settings: { opacity: 0.5 } }).settings.textOpacity).toBe(1.0);
   });
-  test('invalid enums fall back to default; valid ones kept (layout/font/bgColor/textColor)', () => {
+  test('layout/font stay strict enums; bgColor/textColor accept ANY valid #rrggbb (relaxed)', () => {
     const n = (settings) => cs.normalizeConfig({ schemaVersion: 1, settings }).settings;
     expect(n({ layout: 'diagonal' }).layout).toBe('stack');
     expect(n({ layout: 'clock-hero' }).layout).toBe('clock-hero');
@@ -116,10 +127,54 @@ test.describe('config-schema: merge, validation, clamp', () => {
     expect(n({ font: 12 }).font).toBe('system');
     expect(n({ font: 'courier' }).font).toBe('system'); // dropped preset normalizes to the default
     for (const f of cs.FONTS) expect(n({ font: f }).font).toBe(f);
-    expect(n({ bgColor: '#123456' }).bgColor).toBe('#000000'); // not in the palette
-    expect(n({ bgColor: '#ffffff' }).bgColor).toBe('#ffffff');
-    expect(n({ textColor: 'red' }).textColor).toBe('#ffffff');
+    // Colors are no longer enum-limited: an arbitrary (off-palette) valid hex is KEPT.
+    expect(n({ bgColor: '#123456' }).bgColor).toBe('#123456'); // arbitrary, now kept
+    expect(n({ bgColor: '#3b82f6' }).bgColor).toBe('#3b82f6');
+    expect(n({ bgColor: '#FFFFFF' }).bgColor).toBe('#FFFFFF'); // case preserved (valid hex)
+    expect(n({ textColor: '#abcdef' }).textColor).toBe('#abcdef');
     expect(n({ textColor: '#111111' }).textColor).toBe('#111111');
+    for (const c of cs.BG_COLORS) expect(n({ bgColor: c }).bgColor).toBe(c); // presets still valid
+    for (const c of cs.TEXT_COLORS) expect(n({ textColor: c }).textColor).toBe(c);
+    // ...but garbage / non-#rrggbb still coerces to the default (never crashes).
+    expect(n({ bgColor: '#zzz' }).bgColor).toBe('#000000');
+    expect(n({ bgColor: '#12345' }).bgColor).toBe('#000000'); // too short
+    expect(n({ bgColor: 123 }).bgColor).toBe('#000000');
+    expect(n({ textColor: 'red' }).textColor).toBe('#ffffff');
+    expect(n({ textColor: 'rgb(0,0,0)' }).textColor).toBe('#ffffff');
+  });
+
+  test('customBgColor/customTextColor: default "", valid #rrggbb kept, garbage -> "", patch-validated', () => {
+    const n = (settings) => cs.normalizeConfig({ schemaVersion: 1, settings }).settings;
+    // defaults
+    expect(cs.DEFAULT_CONFIG.settings.customBgColor).toBe('');
+    expect(cs.DEFAULT_CONFIG.settings.customTextColor).toBe('');
+    expect(cs.normalizeConfig({}).settings.customBgColor).toBe('');
+    expect(cs.normalizeConfig({}).settings.customTextColor).toBe('');
+    // a valid hex is kept (the "remembered" picker color); off-palette is fine (that's the point).
+    expect(n({ customBgColor: '#3b82f6' }).customBgColor).toBe('#3b82f6');
+    expect(n({ customTextColor: '#abcdef' }).customTextColor).toBe('#abcdef');
+    // garbage / non-string / bad hex -> '' in a FULL normalize (never poisons the config).
+    for (const bad of ['red', '#zzz', '#12', 42, null, {}, [], true, undefined, NaN]) {
+      expect(n({ customBgColor: bad }).customBgColor).toBe('');
+      expect(n({ customTextColor: bad }).customTextColor).toBe('');
+    }
+    // patch validity: a valid hex or '' survives; garbage is DROPPED (not coerced), so a bad
+    // caller can't silently wipe the remembered custom.
+    expect(cs.normalizeSettingsPatch({ customBgColor: '#010203' })).toEqual({ customBgColor: '#010203' });
+    expect(cs.normalizeSettingsPatch({ customTextColor: '' })).toEqual({ customTextColor: '' });
+    expect(cs.normalizeSettingsPatch({ customBgColor: '#zzz' })).toEqual({}); // dropped
+    expect(cs.normalizeSettingsPatch({ customTextColor: 42 })).toEqual({});
+  });
+
+  test('a picked color round-trips: bgColor + customBgColor = the same hex, idempotently', () => {
+    const once = cs.normalizeConfig({ schemaVersion: 1, settings: { bgColor: '#3b82f6', customBgColor: '#3b82f6', textColor: '#abcdef', customTextColor: '#abcdef' } }).settings;
+    expect(once).toMatchObject({ bgColor: '#3b82f6', customBgColor: '#3b82f6', textColor: '#abcdef', customTextColor: '#abcdef' });
+    const twice = cs.normalizeConfig({ schemaVersion: 1, settings: once }).settings;
+    expect(twice).toEqual(once);
+    // a preset active color with a DIFFERENT remembered custom is a valid, stable state
+    const mixed = cs.normalizeConfig({ schemaVersion: 1, settings: { bgColor: '#000000', customBgColor: '#3b82f6' } }).settings;
+    expect(mixed.bgColor).toBe('#000000');
+    expect(mixed.customBgColor).toBe('#3b82f6');
   });
   test('legacy `theme` key is not a setting any more: dropped', () => {
     const out = cs.normalizeConfig({ schemaVersion: 1, settings: { theme: 'light' } });
@@ -183,6 +238,60 @@ test.describe('config-schema: merge, validation, clamp', () => {
     const both = cs.normalizeConfig({ schemaVersion: 1, settings: { font: 'serif', customFont: 'Papyrus' } }).settings;
     expect(both.font).toBe('serif');
     expect(both.customFont).toBe('Papyrus');
+  });
+
+  test('useCustomFont: default false, boolean-validated, wrong-type -> default', () => {
+    const n = (v) => cs.normalizeConfig({ schemaVersion: 1, settings: { useCustomFont: v } }).settings.useCustomFont;
+    expect(cs.DEFAULT_CONFIG.settings.useCustomFont).toBe(false);
+    expect(cs.normalizeConfig({}).settings.useCustomFont).toBe(false);
+    expect(n(true)).toBe(true);
+    expect(n(false)).toBe(false);
+    // non-booleans fall back to the default (false) — never coerced to a truthy "on".
+    for (const bad of ['true', 1, 0, null, {}, [], undefined, NaN]) expect(n(bad)).toBe(false);
+  });
+  test('useCustomFont: patch validity (only a real boolean survives)', () => {
+    expect(cs.normalizeSettingsPatch({ useCustomFont: true })).toEqual({ useCustomFont: true });
+    expect(cs.normalizeSettingsPatch({ useCustomFont: false })).toEqual({ useCustomFont: false });
+    expect(cs.normalizeSettingsPatch({ useCustomFont: 'yes' })).toEqual({}); // dropped, not coerced
+    expect(cs.normalizeSettingsPatch({ useCustomFont: 1 })).toEqual({});
+  });
+  test('useCustomFont + customFont are independent fields and round-trip idempotently', () => {
+    const once = cs.normalizeConfig({ schemaVersion: 1, settings: { customFont: 'Papyrus', useCustomFont: true } }).settings;
+    expect(once.customFont).toBe('Papyrus');
+    expect(once.useCustomFont).toBe(true);
+    const twice = cs.normalizeConfig({ schemaVersion: 1, settings: once }).settings;
+    expect(twice.customFont).toBe('Papyrus');
+    expect(twice.useCustomFont).toBe(true);
+    // a remembered family with the switch OFF is a valid, stable state
+    const off = cs.normalizeConfig({ schemaVersion: 1, settings: { customFont: 'Papyrus', useCustomFont: false } }).settings;
+    expect(off.customFont).toBe('Papyrus');
+    expect(off.useCustomFont).toBe(false);
+  });
+
+  test('cutout: default false, boolean-validated, wrong-type -> default, patch-validated', () => {
+    const n = (v) => cs.normalizeConfig({ schemaVersion: 1, settings: { cutout: v } }).settings.cutout;
+    // default is false (today's normal look), filled in when absent.
+    expect(cs.DEFAULT_CONFIG.settings.cutout).toBe(false);
+    expect(cs.normalizeConfig({}).settings.cutout).toBe(false);
+    expect(n(true)).toBe(true);
+    expect(n(false)).toBe(false);
+    // non-booleans fall back to the default (false) — never coerced to a truthy "on".
+    for (const bad of ['true', 1, 0, null, {}, [], undefined, NaN]) expect(n(bad)).toBe(false);
+    // patch validity: only a real boolean survives a partial patch.
+    expect(cs.normalizeSettingsPatch({ cutout: true })).toEqual({ cutout: true });
+    expect(cs.normalizeSettingsPatch({ cutout: false })).toEqual({ cutout: false });
+    expect(cs.normalizeSettingsPatch({ cutout: 'yes' })).toEqual({}); // dropped, not coerced
+    expect(cs.normalizeSettingsPatch({ cutout: 1 })).toEqual({});
+  });
+  test('cutout round-trips idempotently and is independent of textOpacity', () => {
+    const once = cs.normalizeConfig({ schemaVersion: 1, settings: { cutout: true, textOpacity: 0.4 } }).settings;
+    expect(once.cutout).toBe(true);
+    expect(once.textOpacity).toBe(0.4);
+    const twice = cs.normalizeConfig({ schemaVersion: 1, settings: once }).settings;
+    expect(twice.cutout).toBe(true);
+    expect(twice.textOpacity).toBe(0.4);
+    // a textOpacity change leaves cutout at its default when not supplied
+    expect(cs.normalizeConfig({ schemaVersion: 1, settings: { textOpacity: 0.5 } }).settings.cutout).toBe(false);
   });
 
   test('unknown keys are dropped at every level', () => {

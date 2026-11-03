@@ -1,4 +1,4 @@
-// src/renderer/app.js
+// source/app/renderer/app.js
 // -----------------------------------------------------------------------------
 // The renderer's UI wiring. Pulls together:
 //   * the shared stopwatch state machine + formatters
@@ -126,6 +126,7 @@
     if (sig !== fit.sig) { fit.sig = sig; fit.dirty = true; }
     fitFace();
     fitPreview(); // keep the settings preview clock filling its fixed box (no-op when closed)
+    redrawCutout(); // refresh the knockout holes from the new time/stopwatch (no-op off-cutout)
   }
 
   // --- fit-to-fill (hybrid: transform while resizing, font-size at rest) ------
@@ -247,6 +248,7 @@
     els.face.style.transform = 'none';
     fit.settled = true;
     fit.settleCount++;
+    redrawCutout(); // the face just re-settled at a new size/layout -> redraw the holes crisp
   }
 
   function scheduleSettle() {
@@ -281,6 +283,7 @@
     var scale = computeScale();
     if (scale) applyLive(scale);
     scheduleSettle();
+    redrawCutout(); // track the live-resizing pill so the holes don't lag the size (cheap)
   }
 
   // --- preview fit-to-box (the settings-panel live clock) --------------------
@@ -312,6 +315,19 @@
     var scale = Math.min(availW / natW, availH / natH);
     if (!isFinite(scale) || scale <= 0) return;
     box.style.fontSize = (PREVIEW_BASE_FONT * scale) + 'px';
+  }
+
+  // --- cutout (knockout) canvas redraw ---------------------------------------
+  // Repaint the knockout canvas(es) from the current DOM + settings. paintCutout is a cheap
+  // no-op whenever cutout is off (it just hides the canvas), so this is safe to call on every
+  // tick and after every size/layout/settings change. It must run AFTER fitFace/fitPreview so
+  // the face geometry it measures is the just-settled one. Covers the real pill and — in the
+  // browser build — the in-page preview (the Electron settings window drives its own preview
+  // from settings-window.js). Guarded on lastAppliedSettings so it never runs pre-first-apply.
+  function redrawCutout() {
+    if (!lastAppliedSettings || !settingsMod.paintCutout) return;
+    settingsMod.paintCutout(els.app, els.face, lastAppliedSettings);
+    if (els.spPreview && els.spFace) settingsMod.paintCutout(els.spPreview, els.spFace, lastAppliedSettings);
   }
 
   // --- the second-aligned tick -----------------------------------------------
@@ -356,26 +372,35 @@
   // background swap) so the configured background never animates (no startup flash). The same
   // attribute also fades in the browser-build control cluster + the resize grip.
   //
-  // TWO drivers feed the ONE data-hover attribute, one per environment:
-  //   * BROWSER: mouseenter/mouseleave on the document element. A plain tab has no drag
-  //     region, so these fire normally.
-  //   * ELECTRON: a main-process cursor poll pushed over IPC (bridge.onHoverChanged). This is
-  //     the real fix for the bug where the tint never appeared in the app: the ENTIRE pill is
-  //     -webkit-app-region: drag, and in a frameless window that native drag region SWALLOWS
-  //     the mouse events the document listeners rely on — so against a real OS cursor
+  // ONE driver per environment feeds the ONE data-hover attribute — and ONLY one, on purpose:
+  //   * BROWSER: mouseenter/mouseleave on the document element. A plain tab has no drag region,
+  //     so these fire normally; there's no cursor poll (the browser bridge's onHoverChanged is
+  //     a no-op), so the DOM path is the sole driver.
+  //   * ELECTRON: the main-process cursor poll pushed over IPC (bridge.onHoverChanged). This is
+  //     the fix for the bug where the tint never appeared: the ENTIRE pill is
+  //     -webkit-app-region: drag, and in a frameless window that native drag region SWALLOWS the
+  //     mouse events the document listeners rely on — so against a real OS cursor
   //     mouseenter/mouseleave never fire and data-hover never flipped. (It LOOKED fine under
-  //     Playwright because synthetic hover events are injected below the OS drag region.) main
-  //     polls screen.getCursorScreenPoint() vs the window bounds and sends the hover state
-  //     here; we map it to the same attribute. See main.js's hover-poll + PLAN §2.6.
-  // Both drivers are wired unconditionally and are inert in the other env (the browser bridge's
-  // onHoverChanged is a no-op subscription; Electron's drag region keeps the DOM path quiet).
+  //     Playwright because synthetic hover is injected below the OS drag region.) main polls
+  //     screen.getCursorScreenPoint() vs the window bounds and sends the hover state here.
+  //
+  // WHY NOT wire BOTH in Electron: the DOM path is NOT fully dead there — no-drag children (the
+  // resize grip) DO receive real pointer events, so moving the cursor grip<->pill-body fires a
+  // spurious documentElement `mouseleave` that would clear a poll-set hover MID-hover. Since the
+  // poll only re-sends on CHANGE, it wouldn't re-assert until the cursor fully exits and
+  // re-enters the window — tint + grip stuck hidden. Gating to a single source per env (instead
+  // of last-writer-wins between two) removes that race entirely.
   function setHover(on) { els.app.setAttribute('data-hover', on ? 'true' : 'false'); }
   function wireHover() {
-    var docEl = document.documentElement;
-    docEl.addEventListener('mouseenter', function () { setHover(true); });
-    docEl.addEventListener('mouseleave', function () { setHover(false); });
-    // Electron fallback: main's cursor poll -> IPC -> data-hover (browser bridge no-ops).
-    if (bridge.onHoverChanged) bridge.onHoverChanged(function (hover) { setHover(hover); });
+    if (bridge.env === 'electron') {
+      // Sole driver: main's cursor poll -> IPC. (Do NOT also wire DOM enter/leave — see above.)
+      if (bridge.onHoverChanged) bridge.onHoverChanged(function (hover) { setHover(hover); });
+    } else {
+      // Sole driver: DOM enter/leave on the document element (no drag region in a browser tab).
+      var docEl = document.documentElement;
+      docEl.addEventListener('mouseenter', function () { setHover(true); });
+      docEl.addEventListener('mouseleave', function () { setHover(false); });
+    }
   }
 
   // --- resize grip ------------------------------------------------------------
@@ -426,7 +451,19 @@
     if (els.btnPlay) els.btnPlay.addEventListener('click', function () { runTimerCommand('play'); });
     if (els.btnPause) els.btnPause.addEventListener('click', function () { runTimerCommand('pause'); });
     if (els.btnReset) els.btnReset.addEventListener('click', function () { runTimerCommand('reset'); });
-    if (els.btnSettings) els.btnSettings.addEventListener('click', function () { if (panel) panel.open(); });
+    if (els.btnSettings) els.btnSettings.addEventListener('click', function () { openSettings(); });
+  }
+
+  // Open settings, the right way for THIS environment:
+  //   * browser  -> the IN-PAGE overlay panel (panel.open()); the single-file build
+  //                 has no second window, so this is the only settings UI there.
+  //   * electron -> ask main to open/focus the SEPARATE settings window
+  //                 (bridge.openSettings()); the pill builds no in-page panel.
+  // Routing on `panel` (built only in browser mode, see setupPanel) keeps the split
+  // clean: if the in-page panel exists we're the browser build; otherwise defer to main.
+  function openSettings() {
+    if (panel) { panel.open(); return; }
+    if (bridge.openSettings) bridge.openSettings();
   }
 
   // --- settings ---------------------------------------------------------------
@@ -443,6 +480,7 @@
     fit.dirty = true;
     render(); // hour12/showSeconds may have changed -> redraw the clock
     fitPreview(); // layout/font/visibility changes resize the preview face -> refill its box
+    redrawCutout(); // a settings change (cutout toggled, bg/opacity/font/layout) -> repaint holes
   }
 
   // Build + wire the tabbed settings panel. A click on any option persists the
@@ -450,9 +488,10 @@
   // localStorage); the normalized result comes back and we apply it live.
   function setupPanel() {
     if (!panelMod) return; // defensive: panel script failed to load
-    // No gearEl: the on-pill gear button is gone. The panel is opened
-    // programmatically (tray "Settings…" / right-click menu -> bridge.onOpenSettings
-    // -> panel.open()); panelMod.init tolerates a missing gear element.
+    // BROWSER-ONLY now (boot() skips this in Electron, where settings live in a
+    // separate window). No gearEl: the on-pill gear is gone; the panel opens
+    // programmatically via openSettings() (the browser gear button, or the
+    // __episodeTimer debug hook). panelMod.init tolerates a missing gear element.
     panel = panelMod.init({
       appEl: els.app,
       onSelect: function (key, value) {
@@ -462,12 +501,11 @@
           applyAndRemember(settings);
         });
       },
-      // Let main grow the window for comfortable editing and restore it on close
-      // (Electron only; a no-op in browser mode).
+      // Browser build: there's no OS window to grow (setSettingsOpen is a no-op), so
+      // this just fills the preview box on open. Defer a frame so the panel has
+      // flipped to display:flex and the preview box has laid out.
       onToggle: function (open) {
         if (bridge.setSettingsOpen) bridge.setSettingsOpen(open);
-        // On open, fill the preview box immediately (don't wait for the next tick). Defer a
-        // frame so the panel has flipped to display:flex and the preview box has laid out.
         if (open && root.requestAnimationFrame) root.requestAnimationFrame(fitPreview);
         else if (open) fitPreview();
       },
@@ -492,14 +530,13 @@
 
   // Tray / right-click-menu -> renderer wiring (Electron only; browser bridge
   // no-ops). The menu's Start/Pause/Reset Stopwatch run through runTimerCommand
-  // (the renderer owns the state), and "Settings…" opens the panel. This is now
-  // the primary control path — the on-pill buttons are gone.
+  // (the renderer owns the stopwatch state). This is the primary timer-control path —
+  // the on-pill buttons are gone. "Settings…" is NO LONGER routed through the renderer:
+  // main opens the SEPARATE settings window directly (there's no in-page panel to open
+  // in the Electron pill), so there's nothing to wire here for it.
   function wireTray() {
     if (bridge.onTimerCommand) {
       bridge.onTimerCommand(function (action) { runTimerCommand(action); });
-    }
-    if (bridge.onOpenSettings) {
-      bridge.onOpenSettings(function () { if (panel) panel.open(); });
     }
   }
 
@@ -539,7 +576,9 @@
       // menu), so the suite drives the widget through these — exercising the SAME
       // runTimerCommand / panel.open() code paths the real menu uses.
       command: function (action) { runTimerCommand(action); },
-      openSettings: function () { if (panel) panel.open(); },
+      // Browser -> opens the in-page panel; Electron -> asks main for the separate
+      // settings window (the same path the tray/right-click "Settings…" takes).
+      openSettings: function () { openSettings(); },
       // Read-only window into the fit machinery so tests can lock the hybrid
       // behavior: `settled` + an explicit fontSize / 'none' transform at rest, a
       // 'scale(...)' transform mid-resize, and measureCount to prove the per-tick
@@ -567,8 +606,13 @@
 
     wireHover();
     wireGrip();
-    setupPanel();
-    wireControls(); // after setupPanel so the gear's click can reach panel.open()
+    // The IN-PAGE settings panel is BROWSER-ONLY now. In Electron, settings live in a
+    // SEPARATE window (settings.html / settings-window.js), so the pill builds no panel
+    // and `panel` stays null — openSettings() then defers to main (bridge.openSettings()).
+    // Every preview/panel reference elsewhere is guarded on `panel`/the #sp-* nodes, so
+    // skipping setup here is inert in Electron.
+    if (bridge.env !== 'electron') setupPanel();
+    wireControls(); // after setupPanel so the gear's click can reach panel.open() (browser)
     wireTray();
     installDebugHook();
     wireFit();

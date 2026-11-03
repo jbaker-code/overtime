@@ -13,7 +13,7 @@ test.skip(!!skipReason, `electron project skipped: ${skipReason}`);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const readConfig = (p) => JSON.parse(fs.readFileSync(p, 'utf8'));
-const SETTINGS_KEYS = ['alwaysOnTop', 'bgColor', 'customFont', 'font', 'hour12', 'layout', 'opacity', 'showClock', 'showSeconds', 'showStopwatch', 'textColor', 'textOpacity']; // all settings (sorted)
+const SETTINGS_KEYS = ['alwaysOnTop', 'bgColor', 'customBgColor', 'customFont', 'customTextColor', 'cutout', 'font', 'hour12', 'layout', 'opacity', 'showClock', 'showSeconds', 'showStopwatch', 'textColor', 'textOpacity', 'useCustomFont']; // all 16 settings (sorted)
 
 let live = []; // everything launched in the current test, closed in afterEach
 test.afterEach(async () => {
@@ -32,6 +32,28 @@ async function open({ seedConfig, userData } = {}) {
   return l;
 }
 
+/** The pill's Page (always the app's FIRST window, even after a settings window opens). */
+const pillPage = (l) => l.app.windows().find((w) => w.url().endsWith('index.html')) || l.page;
+
+/** Open the SEPARATE settings window from the pill and return its Page (awaits the new window). */
+async function openSettingsWindow(l) {
+  const [sp] = await Promise.all([l.app.waitForEvent('window'), press(l.page, 'settings')]);
+  await sp.waitForLoadState('domcontentloaded');
+  await sp.locator(SEL.panel).waitFor();
+  return sp;
+}
+
+/** Main-process bounds of a window found by its page URL suffix, or null.
+ *  Needed because l.win() grabs getAllWindows()[0] (focus/z-order) — once the settings
+ *  window is up that may NOT be the pill, so we resolve each window by its URL. */
+const winBoundsByUrl = (l, suffix) =>
+  l.app.evaluate(({ BrowserWindow }, s) => {
+    const w = BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().endsWith(s));
+    return w ? w.getBounds() : null;
+  }, suffix);
+const settingsWinBounds = (l) => winBoundsByUrl(l, 'settings.html');
+const pillWinBounds = (l) => winBoundsByUrl(l, 'index.html');
+
 // ---- shared suite (same assertions as single-file) --------------------------------------
 test.describe('electron: shared widget behaviour', () => {
   let cur;
@@ -43,8 +65,31 @@ test.describe('electron: shared widget behaviour', () => {
     resize: async (page, w, h) => {
       await cur.win((win, { w, h }) => { win.setMinimumSize(1, 1); win.setSize(w, h); }, { w, h });
     },
+    // Electron "Settings" is a SEPARATE window now. Triggering it from the pill (the
+    // tray/right-click path) creates a second BrowserWindow; we await that window and
+    // hand its Page back so the shared panel assertions run against the real settings UI.
+    openSettings: async (page) => {
+      const [sp] = await Promise.all([cur.app.waitForEvent('window'), press(page, 'settings')]);
+      await sp.waitForLoadState('domcontentloaded');
+      await sp.locator(SEL.panel).waitFor();
+      return sp;
+    },
+    // Electron drives data-hover from main's cursor poll over IPC — NOT DOM events (the drag
+    // region swallows those). The poll is off under test, so we send the same IPC it would.
+    setHover: async (page, on) => {
+      await cur.win((win, v) => win.webContents.send('hover:changed', { hover: v }), !!on);
+      await page.waitForFunction((v) => document.querySelector('#app').dataset.hover === v, on ? 'true' : 'false');
+    },
   }, 'electron');
 });
+
+// Reveal the pill's hover affordances (grip/tint) the way the real app does in Electron: via
+// main's hover IPC, since the DOM hover path is intentionally not wired there (the drag region
+// swallows it). Used by the grip tests below in place of page.hover.
+async function hoverViaIpc(l, on = true) {
+  await l.win((win, v) => win.webContents.send('hover:changed', { hover: v }), !!on);
+  await l.page.waitForFunction((v) => document.querySelector('#app').dataset.hover === v, on ? 'true' : 'false');
+}
 
 // ---- window flags -----------------------------------------------------------------------
 test.describe('electron: window behaviour', () => {
@@ -72,7 +117,7 @@ test.describe('electron: window behaviour', () => {
 
   test('on-pill controls exist in the DOM but are CSS-hidden in Electron; only the grip shows on hover', async () => {
     const l = await open();
-    await l.page.hover(SEL.app);
+    await hoverViaIpc(l); // Electron reveals hover affordances via main's cursor-poll IPC, not DOM hover
     await expect(l.page.locator(SEL.grip)).toBeVisible();
     // The browser-only control cluster is still in the shared markup, but in Electron CSS
     // keeps it display:none — control stays on the tray + native right-click menu. It must be
@@ -89,7 +134,7 @@ test.describe('electron: window behaviour', () => {
 
   test('resize grip: dragging it grows the window', async () => {
     const l = await open();
-    await l.page.hover(SEL.app);
+    await hoverViaIpc(l); // reveal the grip via the Electron hover IPC (not DOM hover)
     const before = await l.win((w) => w.getBounds());
     const box = await l.page.locator(SEL.grip).boundingBox();
     const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
@@ -120,23 +165,57 @@ test.describe('electron: the hover IPC fallback drives data-hover (and the tint)
   // be eyeballed on the host — see the handoff notes.)
   const afterOpacity = (page) =>
     page.evaluate(() => parseFloat(getComputedStyle(document.querySelector('#app'), '::after').opacity));
+  const afterRing = (page) =>
+    page.evaluate(() => getComputedStyle(document.querySelector('#app'), '::after').boxShadow);
 
-  test('a hover:changed broadcast flips data-hover true/false and the overlay opacity 1/0', async () => {
+  test('a hover:changed broadcast flips data-hover true/false and the overlay (tint + ring) in/out', async () => {
     const l = await open();
     // Start from a known not-hovered state (no synthetic hover in play).
     await l.page.dispatchEvent('html', 'mouseleave');
     await expect(l.page.locator(SEL.app)).toHaveAttribute('data-hover', 'false');
     await expect.poll(() => afterOpacity(l.page)).toBe(0);
+    expect(await afterRing(l.page)).toBe('none'); // no edge ring until hover
 
     // main -> renderer: cursor entered the window bounds.
     await l.win((w) => w.webContents.send('hover:changed', { hover: true }));
     await expect(l.page.locator(SEL.app)).toHaveAttribute('data-hover', 'true');
     await expect.poll(() => afterOpacity(l.page)).toBe(1); // 50%-black tint faded fully in
+    // the two-tone edge ring is drawn too (readable even on the default black pill) — confirmed
+    // in a REAL Electron window, not just the browser build.
+    const ring = await afterRing(l.page);
+    expect(ring).toContain('inset');
+    expect(ring).toContain('rgba(255, 255, 255, 0.6)');
+    expect(ring).toContain('rgba(0, 0, 0, 0.5)');
 
     // main -> renderer: cursor left.
     await l.win((w) => w.webContents.send('hover:changed', { hover: false }));
     await expect(l.page.locator(SEL.app)).toHaveAttribute('data-hover', 'false');
     await expect.poll(() => afterOpacity(l.page)).toBe(0);
+    expect(await afterRing(l.page)).toBe('none');
+  });
+
+  test('STUCK-STATE REGRESSION: in Electron a DOM mouseleave does NOT clear a poll-set hover', async () => {
+    // The bug: wireHover used to wire BOTH the DOM mouseenter/leave AND the IPC poll in Electron
+    // (last-writer-wins). Moving the cursor onto the no-drag grip and back fires a documentElement
+    // `mouseleave`, which cleared a poll-set hover MID-hover; the change-suppressed poll wouldn't
+    // re-assert until a full exit+re-enter, so the tint/grip got stuck hidden. The fix gates the
+    // driver per env — in Electron ONLY the IPC poll touches data-hover. So a stray DOM mouseleave
+    // (what the grip round-trip produces) must be inert here.
+    const l = await open();
+    await l.win((w) => w.webContents.send('hover:changed', { hover: true }));
+    await expect(l.page.locator(SEL.app)).toHaveAttribute('data-hover', 'true');
+    await expect.poll(() => afterOpacity(l.page)).toBe(1);
+
+    // Fire the spurious DOM mouseleave (grip round-trip). With the dual-driver bug this flipped
+    // data-hover to false; with the per-env gate the DOM listener isn't wired, so hover HOLDS.
+    await l.page.dispatchEvent('html', 'mouseleave');
+    await l.page.waitForTimeout(150); // longer than the overlay transition; prove it doesn't drop
+    await expect(l.page.locator(SEL.app)).toHaveAttribute('data-hover', 'true');
+    await expect.poll(() => afterOpacity(l.page)).toBe(1);
+
+    // And the poll remains authoritative: a real leave event still clears it.
+    await l.win((w) => w.webContents.send('hover:changed', { hover: false }));
+    await expect(l.page.locator(SEL.app)).toHaveAttribute('data-hover', 'false');
   });
 });
 
@@ -204,39 +283,213 @@ test.describe('electron: tray and context menu share one template', () => {
   });
 });
 
-// ---- settings panel grows the window ----------------------------------------------------
-test.describe('electron: settings panel grows + restores the window', () => {
-  // Opening settings on a tiny widget would leave the panel unusable, so main grows the
-  // window to a comfortable editing size and restores the exact prior bounds on close. The
-  // grown size must NEVER be persisted (settingsGrown gates bounds tracking).
-  test('opening grows to ~720x620, closing restores, and the grown size is not persisted', async () => {
+// ---- the SEPARATE settings window (the big architectural change) ------------------------
+test.describe('electron: settings open a SEPARATE window (no pill grow)', () => {
+  // Settings is its own frameless/transparent window beside the pill now. Opening it must
+  // create a SECOND BrowserWindow and leave the pill's own bounds untouched (the old
+  // grow-the-pill hack is gone), so the real clock stays its small self over the wallpaper.
+  test('opening Settings creates a second window; the pill does NOT grow', async () => {
+    const l = await open({ seedConfig: { schemaVersion: 1, window: { x: 200, y: 150, width: 240, height: 130 } } });
+    const before = await pillWinBounds(l); // resolve the pill by URL (not getAllWindows()[0])
+    expect(l.app.windows().length).toBe(1);
+
+    const sp = await openSettingsWindow(l);
+    // A real second window now exists, hosting the same panel (built to fill it).
+    expect(l.app.windows().length).toBe(2);
+    await expect(sp.locator(SEL.panel)).toBeVisible();
+    expect(sp.url().endsWith('settings.html')).toBe(true);
+
+    // The pill is unchanged — it never grew for settings.
+    const after = await pillWinBounds(l);
+    expect(after).toMatchObject({ width: before.width, height: before.height });
+  });
+
+  test('choosing Settings again focuses the existing window (no duplicate)', async () => {
+    const l = await open();
+    const sp = await openSettingsWindow(l);
+    expect(l.app.windows().length).toBe(2);
+    // A second request must NOT spawn another window — main focuses the open one. No new
+    // 'window' event should fire; assert the count stays at 2 after re-triggering.
+    await press(l.page, 'settings');
+    await l.page.waitForTimeout(300);
+    expect(l.app.windows().length).toBe(2);
+    await expect(sp.locator(SEL.panel)).toBeVisible();
+  });
+
+  test('closing the settings window (its ×) leaves the pill running', async () => {
+    const l = await open();
+    const sp = await openSettingsWindow(l);
+    await sp.locator(SEL.close).click(); // the panel's × closes the WHOLE settings window
+    await expect.poll(() => l.app.windows().length).toBe(1);
+    // The pill is still alive and ticking.
+    const pill = pillPage(l);
+    await expect(pill.locator(SEL.app)).toBeVisible();
+    await expect(pill.locator(SEL.time)).toHaveText(/^\d{2}:\d{2}$/);
+  });
+
+  test('editing a setting in the settings window updates the PILL live AND the window preview', async () => {
+    const l = await open();
+    const pill = pillPage(l);
+    const sp = await openSettingsWindow(l);
+
+    // Pick a layout tile in the settings window. It goes config:set-settings ->
+    // settings:changed, broadcast to BOTH windows.
+    await sp.click('#tab-layout');
+    await sp.click('.option[data-setting="layout"][data-value="one-line"]');
+
+    // The PILL re-applies live over the wallpaper (data-layout + the real face).
+    await expect(pill.locator(SEL.app)).toHaveAttribute('data-layout', 'one-line');
+    // The settings window's OWN #app (preview host) reflects it too.
+    await expect(sp.locator(SEL.app)).toHaveAttribute('data-layout', 'one-line');
+
+    // Now a Colors change: --pill-opacity must land on the PILL's :root live.
+    await sp.click('#tab-colors');
+    await sp.locator('#opacity-slider').evaluate((el) => { el.value = '0.3'; el.dispatchEvent(new Event('input', { bubbles: true })); });
+    await expect
+      .poll(() => pill.evaluate(() => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--pill-opacity'))))
+      .toBeCloseTo(0.3, 2);
+
+    // And a bgColor change drives the pill's data-theme (derived from brightness).
+    await sp.click('.option[data-setting="bgColor"][data-value="#ffffff"]');
+    await expect(pill.locator(SEL.app)).toHaveAttribute('data-theme', 'light');
+  });
+
+  test('the color picker in the settings window commits a custom hex to the PILL live (Pass-H broadcast)', async () => {
+    const l = await open();
+    const pill = pillPage(l);
+    const sp = await openSettingsWindow(l);
+    await sp.click('#tab-colors');
+    // Open the bg picker takeover in the SEPARATE settings window, mix an off-palette hex.
+    await sp.click('#bg-color-picker');
+    await expect(sp.locator(SEL.app)).toHaveAttribute('data-colorpicker', 'open');
+    await expect(sp.locator('#cp-title')).toHaveText('Choose background color');
+    await sp.locator('#cp-hex').fill('#3b82f6');
+    // Before Save: the PILL's :root --bg-rgb is NOT yet the picked color (preview-only).
+    expect(await pill.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--bg-rgb').replace(/\s/g, ''))).not.toBe('59,130,246');
+    // Save commits via config:set-settings -> broadcast: the PILL re-applies --bg-rgb live, and
+    // both bgColor AND customBgColor persist as the hex.
+    await sp.click('#cp-save');
+    await expect(sp.locator(SEL.app)).not.toHaveAttribute('data-colorpicker', 'open');
+    await expect
+      .poll(() => pill.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--bg-rgb').replace(/\s/g, '')))
+      .toBe('59,130,246');
+    const settings = await sp.evaluate(() => window.episodeTimer.getSettings());
+    expect(settings.bgColor).toBe('#3b82f6');
+    expect(settings.customBgColor).toBe('#3b82f6');
+    // the picker swatch is the selected tile in the settings window
+    await expect(sp.locator('#bg-color-picker')).toHaveClass(/is-selected/);
+  });
+
+  test('toggling Cutout in the settings window flips the PILL into knockout state live (Pass-H broadcast)', async () => {
+    const l = await open();
+    const pill = pillPage(l);
+    const sp = await openSettingsWindow(l);
+    await sp.click('#tab-colors');
+    // OFF to start, on both windows.
+    await expect(pill.locator(SEL.app)).toHaveAttribute('data-cutout', 'false');
+    await expect(sp.locator(SEL.app)).toHaveAttribute('data-cutout', 'false');
+    // Check the Cutout box in the settings window -> config:set-settings -> broadcast to the pill.
+    await sp.locator('#cutout-checkbox').check();
+    // The PILL re-applies live: data-cutout flips AND its knockout canvas is drawn with REAL
+    // alpha-0 holes where the numerals are (the canvas readback proves the holes exist). The
+    // actual desktop see-through over the wallpaper is host-visual only, but the holes
+    // themselves are asserted here, not merely assumed.
+    await expect(pill.locator(SEL.app)).toHaveAttribute('data-cutout', 'true');
+    await expect.poll(() => pill.evaluate(() => {
+      const c = [...document.querySelector('#app').children]
+        .find((n) => n.tagName === 'CANVAS' && n.className.indexOf('et-cutout') !== -1);
+      if (!c || !c.width || !c.height) return 0;
+      const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+      let holes = 0;
+      for (let i = 3; i < d.length; i += 4) if (d[i] === 0) holes++;
+      return holes;
+    })).toBeGreaterThan(100);
+    // the settings window preview reflects it too (its own data-cutout + canvas)
+    await expect(sp.locator(SEL.app)).toHaveAttribute('data-cutout', 'true');
+  });
+
+  test('a tray/IPC settings change reaches the OPEN settings window preview too', async () => {
+    const l = await open();
+    const sp = await openSettingsWindow(l);
+    // Simulate the tray "Show clock" toggle (applySettingsPatch broadcasts to both windows).
+    await l.page.evaluate(() => window.episodeTimer.setSettings({ showClock: false }));
+    // The settings window re-applied the broadcast -> its preview host hides the clock.
+    await expect(sp.locator(SEL.app)).toHaveAttribute('data-show-clock', 'false');
+  });
+});
+
+// ---- settings window: default size, clamp, bounds persistence, grip ---------------------
+test.describe('electron: settings window geometry', () => {
+  test('first open uses the ~1262x975 default, clamped to the display work area', async () => {
+    const l = await open(); // no settingsWindow in config -> default size
+    await openSettingsWindow(l);
+    const b = await settingsWinBounds(l);
+    const area = await l.app.evaluate(({ screen }) => screen.getPrimaryDisplay().workArea);
+    expect(b).not.toBeNull();
+    // Clamped: never larger than the work area; == the default when the screen is big enough.
+    expect(b.width).toBeLessThanOrEqual(area.width);
+    expect(b.height).toBeLessThanOrEqual(area.height);
+    expect(b.width).toBe(Math.min(1262, area.width));
+    expect(b.height).toBe(Math.min(975, area.height));
+    // And fully on-screen (never opens off the display).
+    expect(b.x).toBeGreaterThanOrEqual(area.x);
+    expect(b.y).toBeGreaterThanOrEqual(area.y);
+    expect(b.x + b.width).toBeLessThanOrEqual(area.x + area.width);
+    expect(b.y + b.height).toBeLessThanOrEqual(area.y + area.height);
+  });
+
+  test('a persisted settingsWindow size is restored on open', async () => {
+    const l = await open({ seedConfig: { schemaVersion: 1, settingsWindow: { x: 60, y: 60, width: 640, height: 520 } } });
+    await openSettingsWindow(l);
+    const b = await settingsWinBounds(l);
+    expect(b.width).toBe(640);
+    expect(b.height).toBe(520);
+  });
+
+  test('moving/resizing the settings window persists its bounds under settingsWindow', async () => {
     const ud = makeUserData();
-    const l = await open({ userData: ud, seedConfig: { schemaVersion: 1, window: { x: 200, y: 150, width: 240, height: 130 } } });
-    const before = await l.win((w) => w.getBounds());
-    expect(before.width).toBeLessThan(400); // started small
+    const l = await open({ userData: ud });
+    await openSettingsWindow(l);
+    // Simulate an OS resize gesture (setBounds alone doesn't fire 'resized'; emit it like
+    // the pill-persistence test does).
+    await l.app.evaluate(({ BrowserWindow }) => {
+      const w = BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().endsWith('settings.html'));
+      w.setBounds({ x: 120, y: 90, width: 700, height: 560 });
+      w.emit('resized');
+    });
+    await sleep(900); // let the debounced trackBounds write hit disk (WRITE_DEBOUNCE_MS=500)
+    const persisted = readConfig(l.configPath).settingsWindow;
+    expect(persisted).toMatchObject({ width: 700, height: 560 });
+  });
 
-    await press(l.page, 'settings'); // gear -> open (same round-trip the tray uses)
-    await expect(l.page.locator(SEL.panel)).toBeVisible();
-    await expect.poll(async () => (await l.win((w) => w.getBounds())).width).toBeGreaterThanOrEqual(700);
-    expect((await l.win((w) => w.getBounds())).height).toBeGreaterThanOrEqual(600);
-
-    await l.page.locator(SEL.close).click(); // the panel's × -> close
-    await expect.poll(async () => (await l.win((w) => w.getBounds())).width).toBe(before.width);
-    expect((await l.win((w) => w.getBounds())).height).toBe(before.height);
-
-    await l.close();
-    const saved = readConfig(l.configPath);
-    expect(saved.window.width).toBe(240);  // the grown 720x620 must not have leaked to disk
-    expect(saved.window.height).toBe(130);
+  test('the bottom-right grip resizes the settings window', async () => {
+    // Seed a SMALL window well inside the display so the grip (bottom-right) has room to
+    // drag in BOTH axes — at the clamped ~full-screen default, downward mouse moves get
+    // clamped to the viewport and height wouldn't change.
+    const l = await open({ seedConfig: { schemaVersion: 1, settingsWindow: { x: 40, y: 40, width: 560, height: 440 } } });
+    const sp = await openSettingsWindow(l);
+    const before = await settingsWinBounds(l);
+    const grip = sp.locator('#settings-grip');
+    await expect(grip).toBeVisible();
+    const box = await grip.boundingBox();
+    const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+    await sp.mouse.move(cx, cy);
+    await sp.mouse.down();
+    await sp.mouse.move(cx + 40, cy + 30, { steps: 4 });
+    await sp.mouse.move(cx + 80, cy + 60, { steps: 4 });
+    await sp.mouse.up();
+    await expect.poll(async () => (await settingsWinBounds(l)).width).toBeGreaterThan(before.width);
+    expect((await settingsWinBounds(l)).height).toBeGreaterThan(before.height);
   });
 });
 
 // ---- tray commands drive the renderer ---------------------------------------------------
 test.describe('electron: tray commands drive the renderer', () => {
-  // The menu-bar tray's Play/Pause/Reset send 'timer:command' (main->renderer) and
-  // "Settings…" sends 'ui:open-settings'. The renderer OWNS the stopwatch state, so we
-  // simulate exactly what the tray menu does -- webContents.send(...) from main -- and
-  // assert the renderer reacts through the same path the on-pill buttons use.
+  // The menu-bar tray's Play/Pause/Reset send 'timer:command' (main->renderer); the renderer
+  // OWNS the stopwatch state, so we simulate exactly what the tray menu does --
+  // webContents.send(...) from main -- and assert the renderer reacts through the same path
+  // the on-pill buttons use. "Settings…" no longer routes through the renderer: it opens the
+  // SEPARATE settings window directly (next test).
   const sendCmd = (l, action) => l.win((w, a) => w.webContents.send('timer:command', { action: a }), action);
 
   test('timer:command play/pause/reset runs the stopwatch', async () => {
@@ -252,11 +505,15 @@ test.describe('electron: tray commands drive the renderer', () => {
     await expect(l.page.locator(SEL.app)).toHaveAttribute('data-status', 'stopped');
   });
 
-  test('ui:open-settings opens the panel (and grows the window)', async () => {
+  test('"Settings…" opens the SEPARATE settings window (not an in-pill panel)', async () => {
     const l = await open({ seedConfig: { schemaVersion: 1, window: { x: 200, y: 150, width: 240, height: 130 } } });
-    await l.win((w) => w.webContents.send('ui:open-settings'));
-    await expect(l.page.locator(SEL.panel)).toBeVisible();
-    await expect.poll(async () => (await l.win((w) => w.getBounds())).width).toBeGreaterThanOrEqual(700);
+    // The pill no longer hosts #settings-panel in Electron.
+    await expect(l.page.locator(SEL.panel)).toHaveCount(0);
+    const sp = await openSettingsWindow(l); // the tray/debug "Settings…" path -> new window
+    await expect(sp.locator(SEL.panel)).toBeVisible();
+    // The pill's bounds didn't grow — it stays its small self. (Resolve the pill by URL;
+    // getAllWindows()[0] may now be the focused settings window.)
+    expect((await pillWinBounds(l)).width).toBe(240);
   });
 });
 
@@ -316,19 +573,19 @@ test.describe('electron: local-fonts permission + system-font browser', () => {
   // enabled in Electron (feature-detection). main.js's handler grants are also locked by a
   // static assertion (static.unit.spec.js), and the full Custom->choose->Save->fallback UI
   // flow is covered deterministically in the single-file suite with a stubbed queryLocalFonts.
-  test('queryLocalFonts is exposed in the real renderer and the Custom tile is shown + enabled', async () => {
+  test('queryLocalFonts is exposed in the settings window and the Custom tile is shown + enabled', async () => {
     const l = await open({ seedConfig: { schemaVersion: 1, window: { x: 200, y: 150, width: 240, height: 130 } } });
-    // The Local Font Access API is present in the real Electron renderer. This requires a
-    // secure context AND that our main.js permission wiring didn't blanket-deny it away.
-    expect(await l.page.evaluate(() => typeof window.queryLocalFonts)).toBe('function');
+    const sp = await openSettingsWindow(l); // the font browser lives in the SETTINGS window now
+    // The Local Font Access API is present in the real settings-window renderer. This requires
+    // a secure context AND that main.js granted 'local-fonts' on THIS window's own session
+    // (installLocalFontsPermission is applied to the settings window too, not just the pill).
+    expect(await sp.evaluate(() => typeof window.queryLocalFonts)).toBe('function');
 
-    await press(l.page, 'settings'); // open the panel (also grows the window)
-    await expect(l.page.locator(SEL.panel)).toBeVisible();
-    await l.page.click('#tab-font');
-    // Feature-detection shows + enables the Custom tile in Electron (it hides it only where the
-    // API is absent). We deliberately do NOT click it here (that triggers the VM-blocking OS prompt).
-    await expect(l.page.locator('#font-custom-tile')).toBeVisible();
-    expect(await l.page.locator('#font-custom-tile').evaluate((el) => el.disabled)).toBe(false);
+    await sp.click('#tab-font');
+    // Feature-detection shows + enables the Custom tile (it hides it only where the API is
+    // absent). We deliberately do NOT click it here (that triggers the VM-blocking OS prompt).
+    await expect(sp.locator('#font-custom-tile')).toBeVisible();
+    expect(await sp.locator('#font-custom-tile').evaluate((el) => el.disabled)).toBe(false);
   });
 });
 

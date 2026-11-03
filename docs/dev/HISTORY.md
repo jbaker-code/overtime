@@ -151,37 +151,99 @@ Six passes (A–F), each builder-then-adversary. All landed.
   Settings** controls (NO Quit) for the **single-file / browser build ONLY**, gated on
   `data-env`. The Electron build stays controls-free (tray + right-click, per Pass C).
 
-## 🚧 Round 2 — polish + live-settings round (QUEUED / IN PROGRESS)
+## ✅ Round 2 — polish + live-settings round (ALL DONE — builder-then-adversary each)
 
-The big move this round: **Settings stops growing the clock window and becomes its own
+The big move this round: **Settings stopped growing the clock window and became its own
 window** (Electron), so the real pill stays small over your wallpaper and updates live.
+Seven passes (G–M) plus a full rebuild; every one built by a subagent and attacked by an
+adversarial-verifier subagent before being called done.
 
-- **Pass G — Electron hover-tint fix + control polish. [IN PROGRESS]** The 50%-black
-  hover tint (Pass C) isn't actually showing up in the *real Electron app*. Suspects: the
-  frameless pill's drag region swallowing the `mouseenter`/`mouseleave` that toggles
-  `data-hover`, and/or the `z-index:-1` tint overlay not compositing over a transparent
-  window. Also on this pass: shift the browser controls so they don't overlap the
-  stopwatch readout on hover, and flip the control-visibility gate to be **positive**
+- **Pass G — Electron hover-tint fix + control polish. [DONE ✅]** The 50%-black hover
+  tint (Pass C) wasn't firing in the *real Electron app* because the frameless pill's
+  `-webkit-app-region: drag` region **swallows DOM `mouseenter`/`mouseleave`**. Fixed by
+  detecting hover in the **main process** — a `screen.getCursorScreenPoint()` poll that
+  sends a `hover:changed` IPC (started/stopped with show/hide, test-gated). Also added a
+  **two-tone inset outline** (`inset 0 0 0 1px rgba(255,255,255,.6)` over
+  `inset 0 0 0 2px rgba(0,0,0,.5)`) so the pill edge reads on *any* wallpaper; shifted the
+  browser controls off the stopwatch readout; and flipped the control gate positive
   (`[data-env="browser"]`).
-- **Pass H — Settings becomes its OWN window (Electron) + live clock. [QUEUED]** Instead
-  of growing the clock's window into a panel, Settings opens as a **separate window beside
-  the pill**; the pill stays small over the wallpaper and the **REAL clock updates LIVE**
-  as you change settings (so you can judge e.g. a cutout against your actual background).
-  The settings window is **resizable**, and its position + size **persist** (like the
-  clock's), opening at **~1262×975** by default (clamped to the screen work-area minus the
-  dock). The browser / single-file build keeps the **in-page overlay panel**.
-- **Pass I — font-tab polish. [QUEUED]** The Custom tile **remembers the last custom
-  font** even after you pick a preset (new **`useCustomFont`** flag; `customFont` is no
-  longer cleared when a curated tile is chosen). Opening the browser **pre-selects AND
-  scrolls to** the active custom font (this was failing after an app restart). Curated
-  card samples **scale to fit inside their cards** (some fonts were bleeding out), cards
-  **grow responsively** with the panel, and there's **spacing between the tab bar and the
-  cards.**
-- **Pass J — Colors tab labels + cutout. [QUEUED]** Gray **"Background Opacity" / "Text
-  Opacity"** labels above each slider; and a new **"cutout" mode** (a checkbox under the
-  text-opacity slider) that **punches the numerals through the opaque pill** to the
-  desktop/wallpaper (text color ignored). Exact name + how it interacts with the
-  text-opacity slider are still being finalized with the host.
+  - 🐞 **Adversary catch (fixed):** with both a DOM driver and the cursor-poll driver live,
+    a grip↔body `mouseleave` cleared the poll-set `data-hover` → stuck state. Fixed by
+    **env-gating one driver per environment** (Electron = IPC only; browser = DOM only).
+- **Pass H — Settings becomes its OWN window (Electron) + live clock. [DONE ✅]** Settings
+  now opens as a **separate frameless window beside the pill** instead of growing the
+  clock's window; the pill stays small over the wallpaper and the **REAL clock updates
+  LIVE** as you edit (so you can judge e.g. a cutout against your actual background). The
+  window is **resizable with a bottom-right grip**, and its position + size **persist**
+  under a new `settingsWindow` bounds key (~1262×975 default, clamped to the work-area minus
+  the dock). `settings:changed` now **broadcasts to both windows**; the old grow/shrink hack
+  (`growForSettings` / `restoreFromSettings`) was removed. The browser / single-file build
+  keeps the **in-page overlay panel** — the separate-window trick is Electron-only.
+  - 🔎 Verifier probed a config write-race (settings window + tray editing at once) and
+    proved it's **not a defect** — serial event loop, distinct keys, atomic whole-object write.
+- **Pass I — font-tab polish. [DONE ✅]** The Custom tile **remembers the last custom font**
+  even after you pick a preset (the `useCustomFont` flag; `customFont` is no longer cleared
+  when a curated tile is chosen). Opening the browser **pre-selects AND scrolls to** the
+  active custom font (`scrollSelectedIntoView` — which was failing after an app restart
+  because the grid had no scroll box until the overlay was shown). Curated card samples
+  **scale to fit inside their cards** (some fonts were bleeding out), cards **grow
+  responsively** with the panel, and there's **spacing between the tab bar and the cards.**
+- **Pass J — Colors tab labels + cutout. [DONE ✅]** Gray **"Background Opacity" / "Text
+  Opacity"** labels above each slider; and the new **"Cutout"** checkbox under the
+  text-opacity slider that **punches the numerals through the opaque pill** to the
+  desktop/wallpaper (text color ignored; `textOpacity` doubles as the cutout strength).
+  - ⚠️ **Design error caught + fixed:** the first attempt used CSS `mix-blend-mode:
+    destination-out`, which **is not a valid CSS value** — Chromium silently dropped it, so
+    no holes appeared. Rebuilt as a real **`<canvas>` `globalCompositeOperation =
+    'destination-out'` knockout**: it measures the DOM text runs (`getBoundingClientRect` +
+    computed font) and re-erases on a DPR-aware canvas, re-running on every
+    render/resize/settle. Adversary re-proved genuine alpha-0 glyph holes at 0% leak outside
+    the measured boxes across all 10 layouts.
+- **Pass K — Colors palette recut + dependency-free color picker. [DONE ✅]** `bgColor` /
+  `textColor` were relaxed from a swatch enum to **any valid `#rrggbb`** (shape-validated —
+  garbage coerces to default on a full normalize, is dropped from a patch), and two new
+  remembered-custom keys **`customBgColor` / `customTextColor`** were added → **`SETTINGS_KEYS`
+  is now 16.** The palettes were recut to **9 background + 9 text** swatches (beige dropped;
+  two near-whites → a gray; the secondary gold → orange; the 10th cell in each grid is the
+  picker swatch). The picker itself is a hand-rolled, **zero-dependency** takeover — a **hue
+  ring + saturation/value square + hex field** (HSV↔hex math; no RGB sliders, no eyedropper)
+  that is **preview-only until Save** (an inline var on `#settings-preview`, never `:root` or
+  storage) and **remembers** the last custom color on the picker swatch even while a preset is
+  active (mirrors how `customFont` is remembered beside the curated `font`). Works in both the
+  Electron settings window and the browser panel.
+  - 🔎 **Adversary verified:** the 16-key schema agrees across all four key lists; the hex box
+    can't inject a non-hex that then commits; the live preview never writes storage before
+    Save; clicking a preset doesn't clobber the remembered custom. No defects.
+- **Pass L — repo reorg. [DONE ✅]** Source moved under **`source/{electron,app,scripts}`**
+  (main / preload / config / window-state in `electron/`, with `build/`; renderer + shared in
+  `app/`; the build pipeline in `scripts/` + `lib/`). Docs moved to **`docs/`**
+  (`ARCHITECTURE.md`, `assets/`, these `dev/` archives); the Playwright config into
+  **`tests/`**; and the committed binaries out of `releases/` into **`tmp/releases/`**
+  (gitignored — they ship from the separate `overtime-releases` repo to dodge GitHub's
+  100 MB-per-file limit). Every live path was repointed (`package.json` main + scripts,
+  electron-builder `files` / `buildResources`, `paths.js` ROOT depth, the Playwright config +
+  the spec requires, README + ARCHITECTURE links). The historical planning docs keep their
+  original paths as an archived record.
+  - 🔎 **Adversary focused on the two things that fail *silently*** — `paths.js` ROOT depth
+    and the electron-builder `files` glob — and confirmed both correct: nothing the app loads
+    at runtime falls outside the globs, and the tray-PNG `⏱` fallback is real. No breakage.
+- **Pass M — cleanup nits + docs. [DONE ✅]** Hardened `broadcastSettings` to skip a window
+  whose `webContents` is already gone before `.send()`; fixed the `scrollSelectedIntoView`
+  catch-fallback to use offsetParent-independent `getBoundingClientRect` centering (the old
+  `offsetTop` math measured from the wrong element and never centered); and added
+  **`app.setName('Overtime')` + `process.title = 'Overtime'`** so the *unpackaged* dev process
+  reads "Overtime" in Activity Monitor (the packaged app already takes its name from
+  electron-builder `productName`). Docs: this file + `DECISIONS.md` got Round-2 entries,
+  `ARCHITECTURE.md`'s stale key-count was corrected to **16** (plus the 9/9 palette facts), and
+  the reorg's now-broken `GUIDE.md` / dev-doc links were repointed. *Left intentionally:* the
+  `app:quit` channel (still wired through preload + bridge — not dead) and the theoretical
+  Pass-D first-paint flip (needs a host-side eyeball; the real startup flash was already fixed
+  back in Pass D).
+- **Rebuild. [DONE ✅]** A full `npm run build` on the VM produced all five artifacts — mac
+  arm64 (~98 MB), mac x64 (~103 MB), Windows x64 (~116 MB), the source zip, and the single-file
+  HTML (now ~199 KB, grown by the picker + cutout) — and they were staged into `tmp/releases/`,
+  replacing the stale pre-Round-1 set. ⚠️ The Windows zip was **cross-built on macOS and not
+  run** — smoke-test on real Windows before calling it good.
 
 ## 📝 Round 2 decisions & notes
 
@@ -207,5 +269,46 @@ window** (Electron), so the real pill stays small over your wallpaper and update
   slow and the VM is memory-constrained; we get intermittent `afterEach` window-`close()`
   teardown timeouts. It's a **VM artifact** — the test *bodies* pass and the same tests pass
   under single-file — so Electron end-to-end stays a host-confirm step.
-- **⚠️ Release artifacts are STALE.** The committed binaries + single-file predate Round 1,
-  and must be **rebuilt** (binaries + single-file) after Round 2 lands.
+- **✅ Release artifacts rebuilt (end of Round 2).** All five artifacts were rebuilt after
+  Round 2 landed and staged into `tmp/releases/` (mac arm64 + x64, Windows x64, source zip,
+  single-file HTML), replacing the stale pre-Round-1 set. They ship from the separate
+  `overtime-releases` repo. *(The Windows zip is cross-built on macOS and not yet
+  smoke-tested on real Windows.)*
+- **📷 Demo GIF — deferred to a host session.** `docs/assets/overtime-demo.gif` is a hand-made
+  screen-recording of the running app; there's **no headless/automated path**, so it can't be
+  regenerated on this VM. A refresh (gray outline, varied sizes, varied colors/fonts) is parked
+  for a host session.
+
+## ✅ Round 2 — what actually landed
+
+All seven passes (G–M) shipped plus a full rebuild — each one builder-then-adversary. The
+headline changes:
+
+- **Settings is its own live Electron window.** The pill no longer grows into a panel —
+  "Settings…" opens a **separate frameless window beside the pill** (its own bounds persist
+  under `settingsWindow`, ~1262×975 default, clamped on-screen). Editing it updates the
+  **real** pill live over your wallpaper. The browser / single-file build keeps the in-page
+  overlay panel.
+- **Colors tab — any color, not just the swatches.** `bgColor` / `textColor` were relaxed
+  from a fixed swatch enum to **any valid `#rrggbb`**, and two remembered-custom keys
+  (`customBgColor` / `customTextColor`) were added — so **`SETTINGS_KEYS` is now 16.** The
+  preset palettes were recut to **9 background + 9 text** swatches (beige dropped; the last
+  bg cell is the picker swatch; two near-whites dropped for a gray, and the old secondary
+  gold became orange).
+- **Dependency-free color picker.** A hand-rolled **hue wheel + saturation/value square +
+  hex field** (no libraries) mixes an arbitrary color. It's **preview-only until Save**, and
+  the last custom color is **remembered** on the picker swatch even while a preset is active
+  (mirrors how `customFont` is remembered beside the curated `font`).
+- **Cutout mode (Pass J) shipped.** A Colors-tab checkbox that **punches the numerals through
+  the opaque pill to the desktop** — a `<canvas>` **`destination-out`** knockout (text color
+  ignored; `textOpacity` doubles as the cutout strength).
+- **Repo reorg.** Source moved under **`source/{electron,app,scripts}`** (main / preload /
+  config / window-state in `electron/`; renderer + shared in `app/`; build pipeline in
+  `scripts/` + `lib/`); docs under `docs/` (with these archives in `docs/dev/`); tests under
+  `tests/`; build scratch + releases under `tmp/`. Live path references were repointed; the
+  historical planning docs keep their original paths as an archived record.
+- **Polish + rebuild.** `broadcastSettings` hardened against a window that closed mid-send; the
+  font-browser scroll-to-selected fallback fixed; and the unpackaged dev process now names
+  itself **"Overtime"** in Activity Monitor. Docs squared up (key-count → 16, dead links
+  repointed, this Round-2 log). Then **all five release artifacts were rebuilt** and staged into
+  `tmp/releases/`.

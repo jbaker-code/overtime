@@ -1,7 +1,7 @@
 // PRD acceptance: "Episode stopwatch HH:MM:SS with working Play/Pause/Stop/Reset"
 // PLAN §3.2 transition table, §3.3 accurate timing, D4/D5/D6.  Project: unit (pure Node).
 const { test, expect } = require('@playwright/test');
-const sw = require('../src/shared/stopwatch.js');
+const sw = require('../source/app/shared/stopwatch.js');
 
 const T0 = 1_000_000;
 const stoppedZero = () => sw.createInitial();

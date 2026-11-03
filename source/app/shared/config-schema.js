@@ -1,4 +1,4 @@
-// src/shared/config-schema.js
+// source/app/shared/config-schema.js
 // -----------------------------------------------------------------------------
 // The single source of truth for the config file's shape, defaults and
 // validation. Lives in /shared so the Electron main process, the renderer's
@@ -58,16 +58,23 @@
 
   // BACKGROUND colors (the pill). The existing `opacity` setting still controls
   // translucency; this is just the base color. First entry is the default
-  // (black -> the original dark pill).
+  // (black -> the original dark pill). These are the PRESET shortcut swatches the
+  // Colors tab renders; `bgColor` itself is NOT limited to this list any more — it
+  // can hold ANY valid #rrggbb the user mixes in the picker (see normalizeSettings
+  // + customBgColor). So this is a curated quick-pick palette, not the allow-list.
+  // (Beige #f5f5dc was dropped; the last grid cell is now the color-picker swatch.)
   var BG_COLORS = [
     '#000000', '#1a1a2e', '#0f3d3e', '#2d132c', '#1b2a4a',
-    '#3a2d1b', '#2c2c2c', '#004e64', '#f5f5dc', '#ffffff'
+    '#3a2d1b', '#2c2c2c', '#004e64', '#ffffff'
   ];
 
-  // TEXT colors (the numerals + labels). First entry is the default (white).
+  // TEXT colors (the numerals + labels). First entry is the default (white). Like
+  // BG_COLORS this is the PRESET quick-pick palette, not an allow-list — `textColor`
+  // accepts any valid #rrggbb (the picker). (The two near-whites #f0f0f0/#e0e0e0 were
+  // dropped, gray #9ca3af added, and the old secondary gold #ffd166 became orange #f97316.)
   var TEXT_COLORS = [
-    '#ffffff', '#f0f0f0', '#e0e0e0', '#111111', '#f5c518',
-    '#ffd166', '#4ade80', '#60a5fa', '#a78bfa', '#ff6b6b'
+    '#ffffff', '#9ca3af', '#111111', '#f5c518', '#f97316',
+    '#4ade80', '#60a5fa', '#a78bfa', '#ff6b6b'
   ];
 
   // customFont — a SEPARATE field from `font` (the curated enum). It holds an
@@ -82,30 +89,76 @@
   // check lives in the renderer's applySettings() (see settings-apply.js).
   var MAX_CUSTOM_FONT = 120; // sane cap on a font-family name (CSS names are short)
 
+  // A valid pill/text color is any `#rrggbb` hex (case-insensitive). bgColor/textColor
+  // hold the ACTIVE color — a preset OR an arbitrary picker color — so their validation
+  // is this shape test, not an enum membership check. customBgColor/customTextColor
+  // REMEMBER the last picker color (so the picker swatch keeps showing it even while a
+  // preset is active), and are either a valid hex or '' (= no remembered custom yet).
+  var HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
+  function isHexColor(value) {
+    return typeof value === 'string' && HEX_COLOR_RE.test(value.trim());
+  }
+  // Coerce to a valid #rrggbb or the given fallback (for a FULL normalize, where every
+  // field must end up valid). Trimmed so a stray-spaced hex still counts.
+  function normalizeHexColor(value, fallback) {
+    return isHexColor(value) ? value.trim() : fallback;
+  }
+  // Coerce a remembered-custom color: a valid #rrggbb, else '' (none).
+  function normalizeCustomColor(value) {
+    return isHexColor(value) ? value.trim() : '';
+  }
+
   // The settings the app reads/applies/persists. Every one is wired end to end
   // (read + apply + writable over IPC / localStorage); the tabbed panel is the
   // v2 UI over exactly these keys.
   // textOpacity sits beside opacity on purpose: opacity is the pill BACKGROUND's
   // alpha, textOpacity is the TEXT color's alpha — two independent translucency
   // controls (the Colors tab shows one under each swatch grid).
-  var SETTINGS_KEYS = ['layout', 'font', 'customFont', 'bgColor', 'textColor', 'opacity', 'textOpacity', 'showSeconds', 'hour12', 'alwaysOnTop', 'showClock', 'showStopwatch'];
+  // useCustomFont sits right beside customFont: customFont REMEMBERS the family the
+  // user picked in the system-font browser, and useCustomFont is the independent
+  // on/off switch for "actually render in it". Splitting them means a curated pick
+  // can flip the switch off WITHOUT forgetting the remembered family (so the Custom
+  // tile can still show / restore it later). See normalizeSettings + settings-apply.
+  // cutout sits beside textOpacity on purpose: it's a Colors-tab mode where the numerals
+  // become HOLES punched through the opaque pill to the desktop (a CANVAS destination-out
+  // knockout), and textOpacity doubles as the cutout STRENGTH (full = crisp punch-through).
+  // See settings-apply.js (data-cutout + the paintCutout canvas renderer).
+  // customBgColor/customTextColor sit beside bgColor/textColor: bgColor/textColor hold the
+  // ACTIVE color (a preset or a picked hex), while customBgColor/customTextColor REMEMBER the
+  // last picker color so the Colors tab's picker swatch keeps showing it even while a preset
+  // is active (mirrors how customFont is remembered beside the curated `font`).
+  var SETTINGS_KEYS = ['layout', 'font', 'customFont', 'useCustomFont', 'bgColor', 'textColor', 'customBgColor', 'customTextColor', 'opacity', 'textOpacity', 'cutout', 'showSeconds', 'hour12', 'alwaysOnTop', 'showClock', 'showStopwatch'];
 
   // DEFAULT_CONFIG — note window has no x/y on a fresh install; window-state.js
   // lets the OS pick a sensible first position (and clamps it on later restores).
   // The settings defaults reproduce the ORIGINAL look (black pill, white text,
   // stacked layout, system font).
+  //
+  // settingsWindow is the SEPARATE Electron settings window's persisted bounds
+  // (position + size). Like `window` it has no x/y on a fresh install (main picks
+  // a spot beside the pill the first time); its default SIZE is the host's
+  // screenshot size (~1262x975), clamped to the display on open. Browser mode has
+  // no second window, so it never reads/writes this block — it just rides along in
+  // the config shape so a hand-edited or round-tripped file stays valid.
   var DEFAULT_CONFIG = {
     schemaVersion: SCHEMA_VERSION,
     window: { width: 240, height: 130 },
+    settingsWindow: { width: 1262, height: 975 },
     timer: { status: 'stopped', accumulatedMs: 0, runningSince: null },
     settings: {
       layout: 'stack', // arrangement of the two readouts (see LAYOUTS)
       font: 'system', // one of FONTS (the curated picker)
       customFont: '', // '' = none; else an arbitrary installed family name (system-font browser)
-      bgColor: '#000000', // pill base color (one of BG_COLORS)
-      textColor: '#ffffff', // numeral/label color (one of TEXT_COLORS)
+      useCustomFont: false, // render in customFont (true) vs. the curated `font` (false). A curated
+      //                       pick flips this off but LEAVES customFont remembered (see settings-apply).
+      bgColor: '#000000', // pill base ACTIVE color — a BG_COLORS preset OR any picked #rrggbb
+      textColor: '#ffffff', // numeral/label ACTIVE color — a TEXT_COLORS preset OR any picked #rrggbb
+      customBgColor: '', // '' = no remembered picker color yet; else the last hex mixed in the bg picker
+      customTextColor: '', // '' = none yet; else the last hex mixed in the text picker (both just REMEMBERED)
       opacity: 1.0, // pill background alpha, 0..1 (solid pill by default; lower in config.json for see-through)
       textOpacity: 1.0, // numeral/label alpha, 0..1 (fully opaque by default; 0 = invisible text)
+      cutout: false, // knockout mode: numerals punch through the opaque pill as holes to the desktop
+      //                (text COLOR is ignored; textOpacity becomes the cutout strength). Default off.
       showSeconds: false, // wall clock HH:MM:SS instead of HH:MM
       hour12: true, // false -> 24-hour, meridiem hidden
       alwaysOnTop: true, // main-side window level
@@ -122,6 +175,13 @@
   // frameless window won't actually go below ~a couple dozen px), which is fine.
   var MIN_WIDTH = 100;
   var MIN_HEIGHT = 20;
+
+  // Minimum size for the SEPARATE settings window (Electron). It hosts the whole
+  // tabbed panel + live preview + font browser, so it needs far more room than the
+  // pill — a comfortable floor that still fits a small laptop display. Mirrors the
+  // settings window's BrowserWindow.minWidth/minHeight + the grip's resize clamp.
+  var SETTINGS_MIN_WIDTH = 420;
+  var SETTINGS_MIN_HEIGHT = 360;
 
   function clone(obj) { return JSON.parse(JSON.stringify(obj)); }
 
@@ -154,17 +214,27 @@
     }
   }
 
-  // Validate the window sub-object. width/height are always honored (clamped to
-  // the minimum); x/y are only kept if finite (window-state.js does the real
-  // on-screen clamping against live displays).
-  function normalizeWindow(raw) {
-    var def = DEFAULT_CONFIG.window;
+  // Validate a bounds sub-object ({width,height,x?,y?}). width/height are always
+  // honored (clamped to the given minimums); x/y are only kept if finite
+  // (window-state.js does the real on-screen clamping against live displays). The
+  // pill window and the settings window share this validator with their own
+  // defaults + minimums.
+  function normalizeBounds(raw, def, minW, minH) {
     var out = {};
-    out.width = isFiniteNumber(raw && raw.width) ? Math.max(MIN_WIDTH, Math.round(raw.width)) : def.width;
-    out.height = isFiniteNumber(raw && raw.height) ? Math.max(MIN_HEIGHT, Math.round(raw.height)) : def.height;
+    out.width = isFiniteNumber(raw && raw.width) ? Math.max(minW, Math.round(raw.width)) : def.width;
+    out.height = isFiniteNumber(raw && raw.height) ? Math.max(minH, Math.round(raw.height)) : def.height;
     if (raw && isFiniteNumber(raw.x)) out.x = Math.round(raw.x);
     if (raw && isFiniteNumber(raw.y)) out.y = Math.round(raw.y);
     return out;
+  }
+
+  function normalizeWindow(raw) {
+    return normalizeBounds(raw, DEFAULT_CONFIG.window, MIN_WIDTH, MIN_HEIGHT);
+  }
+
+  // The separate settings window's bounds (Electron-only; see DEFAULT_CONFIG).
+  function normalizeSettingsWindow(raw) {
+    return normalizeBounds(raw, DEFAULT_CONFIG.settingsWindow, SETTINGS_MIN_WIDTH, SETTINGS_MIN_HEIGHT);
   }
 
   // Pick an enum value if it's in the allow-list, else fall back to default.
@@ -194,8 +264,14 @@
     out.layout = pickEnum(raw.layout, LAYOUTS, def.layout);
     out.font = pickEnum(raw.font, FONTS, def.font);
     out.customFont = normalizeCustomFont(raw.customFont); // free-form family or ''
-    out.bgColor = pickEnum(raw.bgColor, BG_COLORS, def.bgColor);
-    out.textColor = pickEnum(raw.textColor, TEXT_COLORS, def.textColor);
+    out.useCustomFont = typeof raw.useCustomFont === 'boolean' ? raw.useCustomFont : def.useCustomFont;
+    // colors: the ACTIVE bg/text color is ANY valid #rrggbb (a preset or a picked hex);
+    // garbage coerces to the default. customBgColor/customTextColor remember the last
+    // picked hex (valid hex or '' = none).
+    out.bgColor = normalizeHexColor(raw.bgColor, def.bgColor);
+    out.textColor = normalizeHexColor(raw.textColor, def.textColor);
+    out.customBgColor = normalizeCustomColor(raw.customBgColor);
+    out.customTextColor = normalizeCustomColor(raw.customTextColor);
 
     // opacity: clamp into [0, 1].
     if (isFiniteNumber(raw.opacity)) {
@@ -211,6 +287,9 @@
     } else {
       out.textOpacity = def.textOpacity;
     }
+
+    // cutout: boolean knockout mode, default off (see DEFAULT_CONFIG). Wrong type -> default.
+    out.cutout = typeof raw.cutout === 'boolean' ? raw.cutout : def.cutout;
 
     // the three booleans.
     out.showSeconds = typeof raw.showSeconds === 'boolean' ? raw.showSeconds : def.showSeconds;
@@ -230,6 +309,7 @@
     return {
       schemaVersion: SCHEMA_VERSION, // always stamp the current version
       window: normalizeWindow(raw.window),
+      settingsWindow: normalizeSettingsWindow(raw.settingsWindow),
       timer: stopwatch.fromPersisted(raw.timer), // applies restore-as-paused (D6)
       settings: normalizeSettings(raw.settings)
     };
@@ -247,10 +327,19 @@
       // non-string value is dropped from a patch (not coerced), so a misbehaving
       // caller can't silently wipe the user's chosen family.
       case 'customFont': return typeof value === 'string' && value.trim().length <= MAX_CUSTOM_FONT;
-      case 'bgColor': return BG_COLORS.indexOf(value) !== -1;
-      case 'textColor': return TEXT_COLORS.indexOf(value) !== -1;
+      case 'useCustomFont': return typeof value === 'boolean';
+      // bgColor/textColor accept ANY valid #rrggbb (preset or picked); a non-hex
+      // value like '#zzz' or 'red' is DROPPED from a patch (not coerced to default),
+      // so a misbehaving caller can't silently reset the color.
+      case 'bgColor':
+      case 'textColor': return isHexColor(value);
+      // customBgColor/customTextColor: a valid #rrggbb, or '' to clear the remembered
+      // custom. Anything else is dropped from the patch.
+      case 'customBgColor':
+      case 'customTextColor': return value === '' || isHexColor(value);
       case 'opacity': return isFiniteNumber(value);
       case 'textOpacity': return isFiniteNumber(value); // any finite number — gets clamped (same as opacity)
+      case 'cutout': return typeof value === 'boolean';
       case 'showSeconds':
       case 'hour12':
       case 'alwaysOnTop':
@@ -283,6 +372,8 @@
     DEFAULT_CONFIG: DEFAULT_CONFIG,
     MIN_WIDTH: MIN_WIDTH,
     MIN_HEIGHT: MIN_HEIGHT,
+    SETTINGS_MIN_WIDTH: SETTINGS_MIN_WIDTH,
+    SETTINGS_MIN_HEIGHT: SETTINGS_MIN_HEIGHT,
     MAX_CUSTOM_FONT: MAX_CUSTOM_FONT,
     // option catalogs — the panel renders tiles straight from these.
     LAYOUTS: LAYOUTS,
@@ -291,6 +382,8 @@
     TEXT_COLORS: TEXT_COLORS,
     migrate: migrate,
     normalizeConfig: normalizeConfig,
+    normalizeWindow: normalizeWindow,
+    normalizeSettingsWindow: normalizeSettingsWindow,
     normalizeSettings: normalizeSettings,
     normalizeSettingsPatch: normalizeSettingsPatch,
     clone: clone

@@ -2,7 +2,7 @@
 
 > **Developer archive.** The decisions and open questions captured live while the app was
 > being built autonomously on camera (then called *Episode Timer*). Historical — the
-> shipped behaviour lives in [`../GUIDE.md`](../GUIDE.md) and [`../../ARCHITECTURE.md`](../../ARCHITECTURE.md).
+> shipped behaviour lives in [`../GUIDE.md`](../GUIDE.md) and [`../ARCHITECTURE.md`](../ARCHITECTURE.md).
 
 > A running log of calls I made while building autonomously, plus anything flagged for
 > your later review. **Jason:** when you're back, skim the **⚑ For your review** section —
@@ -82,6 +82,21 @@
   is memory-constrained, with intermittent `afterEach` `close()` teardown timeouts — a VM
   artifact (bodies pass; same tests pass under single-file). Electron end-to-end is a
   host-run confirmation step, not a VM gate.
+- **Colors: the active color is any hex; the custom one is remembered.** `bgColor` /
+  `textColor` hold the **active** color — a preset OR any `#rrggbb` mixed in the picker,
+  validated by shape, not enum membership. New `customBgColor` / `customTextColor` keys
+  **remember** the last picked hex so the picker swatch keeps showing it while a preset is
+  active. This took **`SETTINGS_KEYS` to 16**; the quick-pick palettes were recut to **9 bg
+  + 9 text** (beige removed). The picker is **dependency-free** (hand-rolled hue wheel + SV
+  square + hex field) and **preview-only until Save**.
+- **Cutout shipped** (was "forthcoming" above). The knockout checkbox landed: numerals are
+  punched through the opaque pill to the desktop via a `<canvas>` **`destination-out`**
+  composite — text color is ignored and `textOpacity` becomes the cutout strength.
+- **Repo reorg to `source/{electron,app,scripts}`.** Code moved out of root/`src/` into
+  `source/electron/` (main, preload, config, window-state), `source/app/{renderer,shared}`,
+  and `source/scripts/` (+ `lib/`); docs to `docs/` (+ `docs/dev/`), tests to `tests/`, build
+  scratch + releases to `tmp/`. The historical planning docs keep their original paths as an
+  archived record; everything live was repointed to match.
 
 ## 🛠️ Build log / play-by-play
 *(Ep 2 planning session — 2026-10-31. Appended as agents run.)*

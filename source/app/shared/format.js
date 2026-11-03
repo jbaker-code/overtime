@@ -1,4 +1,4 @@
-// src/shared/format.js
+// source/app/shared/format.js
 // -----------------------------------------------------------------------------
 // Tiny, dependency-free formatting helpers for the two readouts.
 //

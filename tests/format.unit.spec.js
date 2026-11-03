@@ -1,7 +1,7 @@
 // PRD acceptance: "Wall clock HH:MM + small AM/PM" and "stopwatch HH:MM:SS".
 // PLAN §3.4. Project: unit (pure Node).
 const { test, expect } = require('@playwright/test');
-const { formatClock, formatElapsed } = require('../src/shared/format.js');
+const { formatClock, formatElapsed } = require('../source/app/shared/format.js');
 
 // Local-time dates (formatClock uses getHours() etc, deliberately not toLocaleTimeString).
 const at = (h, m, s = 0) => new Date(2026, 9, 31, h, m, s);

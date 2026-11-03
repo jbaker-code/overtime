@@ -1,4 +1,4 @@
-// src/renderer/settings-apply.js
+// source/app/renderer/settings-apply.js
 // -----------------------------------------------------------------------------
 // The ONE place that turns the `settings` object into DOM/CSS state. The tabbed
 // settings panel changes settings (over IPC in Electron, localStorage in the
@@ -118,17 +118,24 @@
     }
   }
 
-  // Resolve the ACTIVE font for a settings object. When customFont is set AND
-  // installed, that family wins (with the curated stack appended as a last-ditch
-  // fallback); otherwise the curated fontFamilyFor(font). Returns both the CSS
-  // family string to apply AND whether the custom font is the one actually
-  // rendering, so the panel's name bar can show the TRUE face (never a name for a
-  // font that isn't installed). customFont is kept-but-inactive in config when
-  // unavailable (see applySettings) — we never silently rewrite the user's choice.
+  // Resolve the ACTIVE font for a settings object. The custom font wins ONLY when
+  // the user has it switched ON (useCustomFont), its family is set, AND that family
+  // is actually installed (with the curated stack appended as a last-ditch fallback);
+  // in every other case the curated fontFamilyFor(font) rules. The three gates are
+  // independent on purpose:
+  //   * useCustomFont === false -> a curated pick is in effect; customFont is merely
+  //     REMEMBERED (so the Custom tile can still restore it), not rendered.
+  //   * useCustomFont === true but the family isn't installed -> fall back to the
+  //     curated face (never a blank/missing glyph), and customActive stays false so
+  //     the panel does NOT show the Custom tile selected.
+  // customFont is kept-but-inactive in config in both those cases (see applySettings) —
+  // we never silently rewrite the user's remembered choice. Returns the CSS family to
+  // apply plus whether the custom font is the one actually rendering.
   function activeFontInfo(settings) {
     var curated = fontFamilyFor(settings && settings.font);
+    var useCustom = !!(settings && settings.useCustomFont);
     var custom = settings && typeof settings.customFont === 'string' ? settings.customFont.trim() : '';
-    if (custom && fontAvailable(custom)) {
+    if (useCustom && custom && fontAvailable(custom)) {
       return { family: cssQuote(custom) + ', ' + curated, customActive: true, customName: custom };
     }
     return { family: curated, customActive: false, customName: '' };
@@ -155,6 +162,156 @@
   function luminance(hex) {
     var t = hexToRgbTriplet(hex).split(',').map(function (s) { return parseInt(s, 10); });
     return 0.2126 * t[0] + 0.7152 * t[1] + 0.0722 * t[2];
+  }
+
+  // --- cutout (knockout) canvas ----------------------------------------------
+  // The REAL hole-punch. CSS mix-blend-mode has no Porter-Duff operator, so it cannot
+  // erase a pill's alpha into transparency; a <canvas> can (globalCompositeOperation =
+  // 'destination-out'). In cutout mode we paint a canvas that COVERS the pill: fill it
+  // with the configured background, then draw the numerals in destination-out so those
+  // pixels go to alpha 0 — over the transparent Electron window, the desktop shows
+  // through the glyph-shaped holes. --text-opacity is the erase STRENGTH (globalAlpha):
+  // 1 = crisp full punch, lower = a fainter, partial cutout.
+  //
+  // We DON'T reimplement the 10 layouts' geometry: we MEASURE the live DOM (each text run's
+  // rect + computed font) and redraw it on the canvas, so the holes auto-track every layout,
+  // the chosen/custom font, and the fit scaling. The DOM #face is hidden (visibility:hidden,
+  // kept in layout for measurement) and the #app background goes transparent (CSS, keyed on
+  // data-cutout) so the canvas is the only visible pill surface. paintCutout is a no-op (just
+  // hides the canvas) whenever cutout is off, so non-cutout rendering/fit is untouched.
+
+  // The face may be scaled by a transform() mid-resize (the fit's live phase). In that phase
+  // getBoundingClientRect is already post-transform (positions are correct) but computed
+  // font-size is the un-scaled base, so multiply drawn glyph sizes by the live scale. At rest
+  // (and in the preview, which scales via a baked font-size, not a transform) the scale is 1.
+  function faceTransformScale(faceEl) {
+    try {
+      var t = (typeof root !== 'undefined' && root.getComputedStyle)
+        ? root.getComputedStyle(faceEl).transform : '';
+      if (!t || t === 'none') return 1;
+      var m = /matrix\(([^)]+)\)/.exec(t);
+      if (m) { var a = parseFloat(m[1].split(',')[0]); return (isFinite(a) && a > 0) ? a : 1; }
+      return 1;
+    } catch (e) { return 1; }
+  }
+
+  function fontString(cs, scale) {
+    var sizePx = parseFloat(cs.fontSize) * scale;
+    if (!isFinite(sizePx) || sizePx <= 0) return null;
+    return (cs.fontStyle || 'normal') + ' ' + (cs.fontWeight || '400') + ' ' + sizePx + 'px ' + cs.fontFamily;
+  }
+
+  // Collect the drawable text runs inside the face: every LEAF element that directly holds
+  // text (clock time, meridiem, stopwatch) PLUS any ::before glyph (the layout separators
+  // "·"/"–", which are CSS content, not DOM text). Each run carries its post-transform rect,
+  // its canvas font string, and how to anchor it.
+  function collectRuns(faceEl, scale) {
+    var runs = [];
+    if (!faceEl || typeof root === 'undefined' || !root.getComputedStyle) return runs;
+    var all = faceEl.getElementsByTagName('*');
+    for (var i = 0; i < all.length; i++) {
+      var node = all[i];
+      var cs = root.getComputedStyle(node);
+      if (cs.display === 'none' || cs.visibility === 'collapse') continue;
+      var rect = node.getBoundingClientRect();
+      if (!rect.width || !rect.height) continue;
+      var hasEl = node.children && node.children.length > 0;
+      if (!hasEl) {
+        var txt = (node.textContent || '').trim();
+        if (txt) {
+          var f = fontString(cs, scale);
+          if (f) runs.push({ text: txt, rect: rect, font: f, align: 'left' });
+        }
+      }
+      // ::before content (e.g. the separator dot/dash). Centered in the node's box.
+      var pseudo = root.getComputedStyle(node, '::before');
+      var content = pseudo && pseudo.content;
+      if (content && content !== 'none' && content !== 'normal') {
+        var ch = content.replace(/^["']|["']$/g, '');
+        if (ch) {
+          var pf = fontString(pseudo, scale) || fontString(cs, scale);
+          if (pf) runs.push({ text: ch, rect: rect, font: pf, align: 'center' });
+        }
+      }
+    }
+    return runs;
+  }
+
+  // Find the pill's OWN direct-child cutout canvas (never a descendant preview's canvas — in
+  // the browser build the preview pill is nested inside #app, so a plain querySelector would
+  // collide). Created lazily and inserted FIRST so it paints at the background layer.
+  function directCutoutCanvas(hostEl, create) {
+    var kids = hostEl.children, c = null, i;
+    for (i = 0; i < kids.length; i++) {
+      if (kids[i].tagName === 'CANVAS' && kids[i].className.indexOf('et-cutout') !== -1) { c = kids[i]; break; }
+    }
+    if (!c && create) {
+      c = document.createElement('canvas');
+      c.className = 'et-cutout';
+      c.setAttribute('aria-hidden', 'true');
+      hostEl.insertBefore(c, hostEl.firstChild);
+    }
+    return c;
+  }
+
+  // Draw (or hide) the cutout canvas for a pill. hostEl is the pill (#app or #settings-preview),
+  // faceEl is the readout container whose text we knock out. Safe to call every tick.
+  function paintCutout(hostEl, faceEl, settings) {
+    if (!hostEl || !faceEl || !settings) return;
+    var on = settings.cutout === true;
+    var existing = directCutoutCanvas(hostEl, false);
+    if (!on) { if (existing) existing.style.display = 'none'; return; }
+
+    var canvas = existing || directCutoutCanvas(hostEl, true);
+    canvas.style.display = '';
+    var w = hostEl.clientWidth, h = hostEl.clientHeight;
+    if (!w || !h) return; // not laid out yet (e.g. a closed panel) -> try again next tick
+
+    var dpr = (typeof root !== 'undefined' && root.devicePixelRatio) ? root.devicePixelRatio : 1;
+    var bw = Math.max(1, Math.round(w * dpr)), bh = Math.max(1, Math.round(h * dpr));
+    if (canvas.width !== bw) canvas.width = bw;
+    if (canvas.height !== bh) canvas.height = bh;
+    var ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    // 1) fill the whole pill with the configured background (rgba(bg, pill-opacity)).
+    var op = (typeof settings.opacity === 'number' && isFinite(settings.opacity))
+      ? Math.min(1, Math.max(0, settings.opacity)) : 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = 'rgba(' + hexToRgbTriplet(settings.bgColor) + ',' + op + ')';
+    ctx.fillRect(0, 0, w, h);
+
+    // 2) erase the glyphs -> holes. Strength = text-opacity (0 = no cutout, 1 = full punch).
+    var strength = (typeof settings.textOpacity === 'number' && isFinite(settings.textOpacity))
+      ? Math.min(1, Math.max(0, settings.textOpacity)) : 1;
+    if (strength > 0) {
+      var scale = faceTransformScale(faceEl);
+      var runs = collectRuns(faceEl, scale);
+      var hostRect = hostEl.getBoundingClientRect();
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.globalAlpha = strength;
+      ctx.fillStyle = '#ffffff'; // opaque; destination-out uses only the source ALPHA
+      ctx.textBaseline = 'middle';
+      for (var r = 0; r < runs.length; r++) {
+        var run = runs[r];
+        ctx.font = run.font;
+        ctx.textAlign = run.align === 'center' ? 'center' : 'left';
+        var x = run.align === 'center'
+          ? (run.rect.left + run.rect.width / 2 - hostRect.left)
+          : (run.rect.left - hostRect.left);
+        var y = run.rect.top + run.rect.height / 2 - hostRect.top;
+        ctx.fillText(run.text, x, y);
+      }
+    }
+
+    // reset so the 2D context isn't left in knockout mode
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
   }
 
   // Remember the last-applied settings so the tick can ask for clock options
@@ -202,6 +359,13 @@
       // the separator) when off; with both off the pill is intentionally blank.
       appEl.setAttribute('data-show-clock', settings.showClock === false ? 'false' : 'true');
       appEl.setAttribute('data-show-stopwatch', settings.showStopwatch === false ? 'false' : 'true');
+      // Cutout (knockout) mode. The attribute stages the canvas knockout: CSS makes the
+      // pill background transparent + hides (but keeps-in-layout) the DOM face, and
+      // paintCutout() draws the numerals onto a <canvas> with destination-out so they become
+      // real transparent holes to the desktop (text color is ignored; --text-opacity is the
+      // erase STRENGTH). This attribute drives the real pill; the settings-window preview sets
+      // it on its own #app too (and paintCutout runs for the preview from the renderers).
+      appEl.setAttribute('data-cutout', settings.cutout === true ? 'true' : 'false');
     }
 
     // hour12/showSeconds aren't CSS — they feed formatClock() on the next tick.
@@ -219,6 +383,7 @@
 
   root.EpisodeTimerSettings = {
     applySettings: applySettings,
+    paintCutout: paintCutout, // canvas knockout renderer (cutout mode); no-op when cutout off
     getClockOptions: getClockOptions,
     fontFamilyFor: fontFamilyFor,
     // custom-font support (used by the Font tab's system-font browser + name bar)

@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ROOT = path.resolve(__dirname, '..', '..'); // the repo root (scripts/lib -> repo)
+const ROOT = path.resolve(__dirname, '..', '..', '..'); // the repo root (source/scripts/lib -> repo)
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 
 const VERSION = pkg.version;

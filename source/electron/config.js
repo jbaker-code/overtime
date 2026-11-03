@@ -1,4 +1,4 @@
-// src/main/config.js
+// source/electron/config.js
 // -----------------------------------------------------------------------------
 // THE config module (main-process side). One JSON file in userData, written
 // atomically (tmp file + rename), tolerant of a missing or corrupt file, with
@@ -15,7 +15,7 @@
 
 var fs = require('fs');
 var path = require('path');
-var schema = require('../shared/config-schema');
+var schema = require('../app/shared/config-schema');
 
 // Resolve the userData directory lazily. In Electron we ask `app` (main.js has
 // already honored EPISODE_TIMER_USER_DATA via app.setPath before we load). We

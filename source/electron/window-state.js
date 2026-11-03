@@ -1,4 +1,4 @@
-// src/main/window-state.js
+// source/electron/window-state.js
 // -----------------------------------------------------------------------------
 // Window bounds persistence + the "never opens off-screen" clamp (PLAN D15).
 //
@@ -14,7 +14,7 @@
 // -----------------------------------------------------------------------------
 'use strict';
 
-var schema = require('../shared/config-schema');
+var schema = require('../app/shared/config-schema');
 
 // `screen` can only be required after app 'ready'. We require it lazily so this
 // module is importable (and node --check-able) outside a running Electron app.
@@ -46,13 +46,22 @@ function slideInside(rect, area) {
   return { x: Math.round(x), y: Math.round(y) };
 }
 
-function restoreBounds(config, defaults) {
+// restoreBounds(config, defaults, opts) -> { width, height, x?, y? }
+//   opts.key       : the config key holding the saved bounds (default 'window';
+//                    the separate settings window passes 'settingsWindow').
+//   opts.minWidth  : size floor (default schema.MIN_WIDTH).
+//   opts.minHeight : size floor (default schema.MIN_HEIGHT).
+function restoreBounds(config, defaults, opts) {
   defaults = defaults || { width: 240, height: 130 };
-  var saved = (config && config.get('window')) || {};
+  opts = opts || {};
+  var key = opts.key || 'window';
+  var minW = isFiniteNumber(opts.minWidth) ? opts.minWidth : schema.MIN_WIDTH;
+  var minH = isFiniteNumber(opts.minHeight) ? opts.minHeight : schema.MIN_HEIGHT;
+  var saved = (config && config.get(key)) || {};
 
-  // Size: always restored, clamped to the minimums from the schema.
-  var width = isFiniteNumber(saved.width) ? Math.max(schema.MIN_WIDTH, Math.round(saved.width)) : defaults.width;
-  var height = isFiniteNumber(saved.height) ? Math.max(schema.MIN_HEIGHT, Math.round(saved.height)) : defaults.height;
+  // Size: always restored, clamped to the minimums.
+  var width = isFiniteNumber(saved.width) ? Math.max(minW, Math.round(saved.width)) : defaults.width;
+  var height = isFiniteNumber(saved.height) ? Math.max(minH, Math.round(saved.height)) : defaults.height;
 
   var bounds = { width: width, height: height };
 
@@ -123,22 +132,25 @@ function clampBounds(rect) {
 
 // trackBounds — persist position + size on move/resize, debounced so a drag
 // doesn't hammer the disk. Writes the whole {x,y,width,height} each time.
-// opts: a number (legacy debounceMs) or { debounceMs, shouldSkipSave }.
-// shouldSkipSave() returning true pauses persistence (used while the window is
-// temporarily grown for the settings panel — that size must never be saved).
+// opts: a number (legacy debounceMs) or { debounceMs, shouldSkipSave, key }.
+//   key           : the config key to write into (default 'window'; the separate
+//                   settings window passes 'settingsWindow').
+//   shouldSkipSave: returning true pauses persistence (kept as a general hook; no
+//                   longer used by the pill now that the settings-grow hack is gone).
 function trackBounds(win, config, opts) {
   if (typeof opts === 'number') opts = { debounceMs: opts }; // back-compat
   opts = opts || {};
   var debounceMs = opts.debounceMs || 300;
+  var key = opts.key || 'window';
   var shouldSkipSave = typeof opts.shouldSkipSave === 'function' ? opts.shouldSkipSave : function () { return false; };
   var timer = null;
 
   function save() {
     timer = null;
     if (win.isDestroyed()) return;
-    if (shouldSkipSave()) return; // settings-grown: don't persist the temp size
+    if (shouldSkipSave()) return;
     var b = win.getBounds(); // { x, y, width, height }
-    config.set('window', { x: b.x, y: b.y, width: b.width, height: b.height });
+    config.set(key, { x: b.x, y: b.y, width: b.width, height: b.height });
   }
 
   function onChange() {
@@ -155,7 +167,7 @@ function trackBounds(win, config, opts) {
     if (timer) { clearTimeout(timer); timer = null; }
     if (!win.isDestroyed() && !shouldSkipSave()) {
       var b = win.getBounds();
-      config.set('window', { x: b.x, y: b.y, width: b.width, height: b.height });
+      config.set(key, { x: b.x, y: b.y, width: b.width, height: b.height });
     }
   });
 }

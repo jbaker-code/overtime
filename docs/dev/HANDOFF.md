@@ -8,7 +8,7 @@
 ## Where things live
 
 - **[`../GUIDE.md`](../GUIDE.md)** — the detailed user + build + test guide (start here).
-- **[`../../ARCHITECTURE.md`](../../ARCHITECTURE.md)** — how the app is wired: process
+- **[`../ARCHITECTURE.md`](../ARCHITECTURE.md)** — how the app is wired: process
   model, IPC contract, stopwatch state machine, config schema, build pipeline.
 - **[`PRD.md`](./PRD.md)** — the original product spec (historical).
 - **[`PLAN.md`](./PLAN.md)** — the original implementation plan (historical, superseded in

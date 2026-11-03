@@ -3,7 +3,7 @@
 > **Developer archive.** This is the original product spec, written before any code
 > existed and while the app was still called *Episode Timer* and lived at `tools/clock/`
 > inside the BakerCode YouTube repo. It's kept for posterity — the shipped app is
-> described in [`../GUIDE.md`](../GUIDE.md) and [`../../ARCHITECTURE.md`](../../ARCHITECTURE.md),
+> described in [`../GUIDE.md`](../GUIDE.md) and [`../ARCHITECTURE.md`](../ARCHITECTURE.md),
 > which win wherever they disagree with this. See "Current state" at the bottom for how
 > the build diverged from this spec.
 

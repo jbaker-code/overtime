@@ -9,13 +9,13 @@ const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
 test.describe('static source assertions', () => {
   test('main.js never enables content protection, and says so on purpose', () => {
-    const src = read('main.js');
+    const src = read('source/electron/main.js');
     expect(src).not.toMatch(/setContentProtection\(\s*true/);
     expect(src).toMatch(/DELIBERATELY ABSENT/);
   });
 
   test('main.js grants ONLY the local-fonts permission (queryLocalFonts) on the window session, not a blanket grant', () => {
-    const src = read('main.js');
+    const src = read('source/electron/main.js');
     expect(src).toMatch(/setPermissionRequestHandler/);
     expect(src).toMatch(/setPermissionCheckHandler/);
     // The decision is gated on the exact permission name, so it's not a blanket allow.
@@ -25,7 +25,7 @@ test.describe('static source assertions', () => {
   });
 
   test('main.js has no nodeIntegration / remote, contextIsolation on, transparent frameless window', () => {
-    const src = read('main.js');
+    const src = read('source/electron/main.js');
     expect(src).not.toMatch(/nodeIntegration\s*:\s*true/);
     expect(src).toMatch(/contextIsolation\s*:\s*true/);
     expect(src).toMatch(/frame\s*:\s*false/);
@@ -34,7 +34,7 @@ test.describe('static source assertions', () => {
   });
 
   test('renderer index.html honours the inliner contract (relative assets only, no modules)', () => {
-    const html = read('src/renderer/index.html');
+    const html = read('source/app/renderer/index.html');
     expect(html).not.toMatch(/type\s*=\s*["']module["']/);
     expect(html).not.toMatch(/(src|href)\s*=\s*["'](https?:)?\/\//i);
     const order = [...html.matchAll(/<script[^>]*\ssrc\s*=\s*["']([^"']+)["']/g)].map((m) => path.basename(m[1]));
@@ -47,7 +47,7 @@ test.describe('static source assertions', () => {
   });
 
   test('renderer DOM contract ids are all present in index.html (readouts + grip)', () => {
-    const html = read('src/renderer/index.html');
+    const html = read('source/app/renderer/index.html');
     for (const id of ['app', 'face', 'clock', 'clock-time', 'clock-meridiem', 'stopwatch',
       'separator', 'grip']) {
       expect(html, `#${id}`).toMatch(new RegExp(`id\\s*=\\s*["']${id}["']`));
@@ -60,7 +60,7 @@ test.describe('static source assertions', () => {
     // has no tray/native menu — so #controls with Play/Pause/Reset/Settings is back in the
     // markup (CSS alone hides it in Electron). There is NO Quit button: you can't quit a web
     // page, and a Stop button never shipped.
-    const html = read('src/renderer/index.html');
+    const html = read('source/app/renderer/index.html');
     for (const id of ['controls', 'btn-play', 'btn-pause', 'btn-reset', 'btn-settings']) {
       expect(html, `#${id} must be present`).toMatch(new RegExp(`id\\s*=\\s*["']${id}["']`));
     }
@@ -70,7 +70,7 @@ test.describe('static source assertions', () => {
   });
 
   test('styles.css: the on-pill controls use a POSITIVE data-env="browser" gate (shown ONLY in browser; electron/absent/garbage stay hidden)', () => {
-    const css = read('src/renderer/styles.css');
+    const css = read('source/app/renderer/styles.css');
     // The base rule hides the cluster — this is the SAFE DEFAULT, not the Electron protection:
     // a missing/garbage data-env falls through to it and stays hidden too.
     expect(css).toMatch(/#controls\s*\{[^}]*display:\s*none/);
@@ -89,7 +89,7 @@ test.describe('static source assertions', () => {
     // region swallows the DOM mouseenter/leave the renderer uses, so against a real OS cursor
     // data-hover never flips and the 50%-black grab tint never appears. main polls the OS
     // cursor vs the window bounds and pushes the hover state over IPC. Assert that path exists.
-    const main = read('main.js');
+    const main = read('source/electron/main.js');
     // polls the global cursor position and compares it to the window bounds
     expect(main).toMatch(/getCursorScreenPoint\(/);
     expect(main).toMatch(/win\.getBounds\(/);
@@ -103,19 +103,19 @@ test.describe('static source assertions', () => {
   });
 
   test('preload exposes onHoverChanged on the hover:changed channel, and the bridge forwards it in BOTH envs', () => {
-    const preload = read('preload.js');
+    const preload = read('source/electron/preload.js');
     expect(preload).toMatch(/onHoverChanged\s*:/);
     expect(preload).toMatch(/ipcRenderer\.on\(\s*['"]hover:changed['"]/);
-    const bridge = read('src/renderer/bridge.js');
+    const bridge = read('source/app/renderer/bridge.js');
     // electron bridge forwards to the preload api; browser bridge returns a no-op unsubscribe
     expect((bridge.match(/onHoverChanged\s*:/g) || []).length).toBeGreaterThanOrEqual(2);
     // the renderer wires the fallback into the SAME data-hover attribute the DOM path uses
-    const appjs = read('src/renderer/app.js');
+    const appjs = read('source/app/renderer/app.js');
     expect(appjs).toMatch(/bridge\.onHoverChanged\(/);
   });
 
   test('main.js builds ONE shared menu template used by both the tray and the right-click menu', () => {
-    const src = read('main.js');
+    const src = read('source/electron/main.js');
     // a single builder...
     expect(src).toMatch(/function\s+buildMenuTemplate\s*\(/);
     // ...consumed by the tray (buildFromTemplate(buildMenuTemplate())) AND popped as the
@@ -130,7 +130,7 @@ test.describe('static source assertions', () => {
   });
 
   test('layout DOM: #face.arrange with .r-clock, .r-sep, .r-sw', () => {
-    const html = read('src/renderer/index.html');
+    const html = read('source/app/renderer/index.html');
     expect(html).toMatch(/id="face"[^>]*class="[^"]*\barrange\b/);
     expect(html).toMatch(/id="clock"[^>]*class="[^"]*\br-clock\b/);
     expect(html).toMatch(/id="separator"[^>]*class="[^"]*\br-sep\b/);
@@ -138,7 +138,7 @@ test.describe('static source assertions', () => {
   });
 
   test('settings-panel.js / settings-apply.js are loaded in dependency order before app.js', () => {
-    const html = read('src/renderer/index.html');
+    const html = read('source/app/renderer/index.html');
     const order = [...html.matchAll(/<script[^>]*\ssrc\s*=\s*["']([^"']+)["']/g)].map((m) => path.basename(m[1]));
     const idx = (n) => order.indexOf(n);
     expect(idx('config-schema.js')).toBeGreaterThan(idx('stopwatch.js'));
@@ -148,7 +148,7 @@ test.describe('static source assertions', () => {
   });
 
   test('styles.css: the hover tint is an ::after overlay, and #app never transitions its background (no startup flash)', () => {
-    const css = read('src/renderer/styles.css');
+    const css = read('source/app/renderer/styles.css');
     // The hover tint is a pseudo-element overlay whose OPACITY animates...
     expect(css).toMatch(/#app::after\s*\{[^}]*opacity:\s*0/);
     expect(css).toMatch(/#app::after\s*\{[^}]*background:\s*rgba\(0,\s*0,\s*0,\s*0?\.5\)/);
@@ -161,15 +161,17 @@ test.describe('static source assertions', () => {
   });
 
   test('styles.css: the Font tab name bar / Edit button are gone; a dashed Custom tile replaces them', () => {
-    const css = read('src/renderer/styles.css');
+    const css = read('source/app/renderer/styles.css');
     expect(css).not.toMatch(/\.font-namebar\b/);
     expect(css).not.toMatch(/\.font-edit-btn\b/);
     expect(css).toMatch(/\.option-custom\b/);
   });
 
-  test('package.json is untouched scaffold: test script is "playwright test"', () => {
+  test('package.json wiring: test script runs playwright, main points at the Electron entry', () => {
+    // After the Pass-L reorg, the Electron entry lives at source/electron/main.js and the
+    // Playwright config moved into tests/, so `npm test` passes --config explicitly.
     const pkg = JSON.parse(read('package.json'));
-    expect(pkg.scripts.test).toBe('playwright test');
-    expect(pkg.main).toBe('main.js');
+    expect(pkg.scripts.test).toBe('playwright test --config tests/playwright.config.js');
+    expect(pkg.main).toBe('source/electron/main.js');
   });
 });

@@ -6,7 +6,7 @@
 //   ctx.resize(page, w, h)  -> Promise<void>   resize the "window" to w x h
 //
 // Maps to the PRD acceptance checklist (PRD.md "Acceptance checklist") - see comments.
-const { SEL, advance, press, fontSizePx, hover } = require('./dom');
+const { SEL, advance, press, fontSizePx } = require('./dom');
 
 function registerSharedWidgetTests(test, expect, ctx, label) {
   test.describe(`${label}: wall clock`, () => {
@@ -143,6 +143,11 @@ function registerSharedWidgetTests(test, expect, ctx, label) {
     // so the user has a visible surface to grab/drag even over a transparent background.
     // It's an overlay (not a background swap) specifically so the CONFIGURED background
     // never animates — that was causing a startup/settings flash (see the no-flash test).
+    //
+    // Driving hover is ENV-SPECIFIC now (one driver per env, see app.js wireHover): browser
+    // flips data-hover from DOM mouseenter/leave; Electron flips it from main's cursor poll over
+    // IPC (the drag region swallows DOM events there). So we go through ctx.setHover, which each
+    // spec implements with its env's real driver — never a raw DOM event that only works in one.
     const afterOpacity = (page) =>
       page.evaluate(() => parseFloat(getComputedStyle(document.querySelector('#app'), '::after').opacity));
 
@@ -150,18 +155,18 @@ function registerSharedWidgetTests(test, expect, ctx, label) {
       // Seed a NON-black opaque background so a hover tint would be obvious if it (wrongly)
       // landed on #app's own background. The whole point of the refactor is that it does NOT.
       const page = await ctx.open({ settings: { bgColor: '#1a1a2e', opacity: 1 } });
-      await page.dispatchEvent('html', 'mouseleave');
+      await ctx.setHover(page, false);
       await expect(page.locator(SEL.app)).toHaveAttribute('data-hover', 'false');
       // #app's OWN background stays the configured navy in BOTH states (no flash).
       await expect(page.locator(SEL.app)).toHaveCSS('background-color', 'rgb(26, 26, 46)');
       // The overlay is a separate layer: 50% black, hidden (opacity 0) when not hovered.
       expect(await page.evaluate(() => getComputedStyle(document.querySelector('#app'), '::after').backgroundColor)).toBe('rgba(0, 0, 0, 0.5)');
       await expect.poll(() => afterOpacity(page)).toBe(0);
-      await hover(page);
+      await ctx.setHover(page, true);
       await expect(page.locator(SEL.app)).toHaveAttribute('data-hover', 'true');
       await expect(page.locator(SEL.app)).toHaveCSS('background-color', 'rgb(26, 26, 46)'); // unchanged -> no flash
       await expect.poll(() => afterOpacity(page)).toBe(1); // overlay faded fully in
-      await page.dispatchEvent('html', 'mouseleave');
+      await ctx.setHover(page, false);
       await expect(page.locator(SEL.app)).toHaveAttribute('data-hover', 'false');
       await expect.poll(() => afterOpacity(page)).toBe(0); // and back out
     });
@@ -181,10 +186,10 @@ function registerSharedWidgetTests(test, expect, ctx, label) {
       // fill the window via fitFace — must keep their size when hovering.
       const page = await ctx.open();
       const rect = (sel) => page.evaluate((s) => document.querySelector(s).getBoundingClientRect().width, sel);
-      await page.dispatchEvent('html', 'mouseleave');
+      await ctx.setHover(page, false);
       await expect(page.locator(SEL.app)).toHaveAttribute('data-hover', 'false');
       const idle = await rect(SEL.time);
-      await page.hover(SEL.app);
+      await ctx.setHover(page, true);
       await expect(page.locator(SEL.app)).toHaveAttribute('data-hover', 'true');
       await expect.poll(() => rect(SEL.time)).toBeCloseTo(idle, 0);
     });
@@ -400,11 +405,15 @@ function registerSharedWidgetTests(test, expect, ctx, label) {
       expect(v.text.toLowerCase()).toBe('#ffffff');
     });
 
-    test('out-of-range opacity clamped (7 -> 1); invalid layout/bgColor fall back to defaults', async () => {
-      const page = await ctx.open({ settings: { opacity: 7, layout: 'diagonal', bgColor: '#123456' } });
+    test('out-of-range opacity clamped (7 -> 1); invalid layout -> default; non-hex bgColor -> default', async () => {
+      // bgColor is relaxed to "any valid #rrggbb", so a NON-hex value (not an off-palette hex)
+      // is what now falls back to the default black (#000000 -> data-theme dark).
+      const page = await ctx.open({ settings: { opacity: 7, layout: 'diagonal', bgColor: 'not-a-color' } });
       const op = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--pill-opacity').trim());
       expect(parseFloat(op)).toBe(1);
       await expect(page.locator(SEL.app)).toHaveAttribute('data-layout', 'stack'); // invalid enum -> default
+      const bg = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--bg-rgb').replace(/\s/g, ''));
+      expect(bg).toBe('0,0,0'); // non-hex -> default black
       await expect(page.locator(SEL.app)).toHaveAttribute('data-theme', 'dark');
     });
   });
@@ -443,51 +452,70 @@ function registerSharedWidgetTests(test, expect, ctx, label) {
   });
 
   test.describe(`${label}: settings panel (UI)`, () => {
-    // The v2 tabbed panel: the gear opens it; tabs are Layout / Font / Colors (NO
-    // "Advanced" tab — float-on-top moved to the Electron menu-bar tray); the Colors
-    // tab carries the opacity slider; a live preview mirrors the real clock. (Opening
-    // it also grows the Electron window — that's covered by a dedicated electron test.)
+    // The v2 tabbed panel: tabs are Layout / Font / Colors (NO "Advanced" tab —
+    // float-on-top moved to the Electron menu-bar tray); the Colors tab carries the
+    // opacity slider; a live preview shows the clock.
+    //
+    // WHERE the panel lives is env-specific now, and ctx.openSettings hides that:
+    //   * browser  -> the IN-PAGE #settings-panel overlay on the SAME page (unchanged).
+    //   * electron -> a SEPARATE window; ctx.openSettings returns THAT window's Page.
+    // So every assertion below runs against the page ctx.openSettings hands back (`sp`),
+    // which is the pill page in browser and the settings window in Electron. The
+    // separate-window specifics (second window created, pill updates live, bounds
+    // persist, grip resize, close) are covered in the electron spec.
     async function openPanel(page) {
-      await press(page, 'settings'); // open programmatically (the tray/right-click path)
-      await expect(page.locator(SEL.panel)).toBeVisible();
-      return page;
+      const sp = await ctx.openSettings(page);
+      await expect(sp.locator(SEL.panel)).toBeVisible();
+      return sp;
     }
 
     test('opening the panel shows exactly three tabs (Layout/Font/Colors), no Advanced', async () => {
-      const page = await openPanel(await ctx.open());
-      await expect(page.locator('#tab-layout')).toBeVisible();
-      await expect(page.locator('#tab-font')).toBeVisible();
-      await expect(page.locator('#tab-colors')).toBeVisible();
-      await expect(page.locator('#tab-advanced')).toHaveCount(0);
-      await expect(page.locator('#float-on-top-toggle')).toHaveCount(0);
-      expect(await page.locator('#settings-panel .settings-tabs .tab').count()).toBe(3);
+      const sp = await openPanel(await ctx.open());
+      await expect(sp.locator('#tab-layout')).toBeVisible();
+      await expect(sp.locator('#tab-font')).toBeVisible();
+      await expect(sp.locator('#tab-colors')).toBeVisible();
+      await expect(sp.locator('#tab-advanced')).toHaveCount(0);
+      await expect(sp.locator('#float-on-top-toggle')).toHaveCount(0);
+      expect(await sp.locator('#settings-panel .settings-tabs .tab').count()).toBe(3);
     });
 
     test('clicking the Font tab activates the font panel', async () => {
-      const page = await openPanel(await ctx.open());
-      await expect(page.locator('#panel-layout')).toHaveClass(/is-active/);
-      await page.click('#tab-font');
-      await expect(page.locator('#panel-font')).toHaveClass(/is-active/);
-      await expect(page.locator('#panel-layout')).not.toHaveClass(/is-active/);
+      const sp = await openPanel(await ctx.open());
+      await expect(sp.locator('#panel-layout')).toHaveClass(/is-active/);
+      await sp.click('#tab-font');
+      await expect(sp.locator('#panel-font')).toHaveClass(/is-active/);
+      await expect(sp.locator('#panel-layout')).not.toHaveClass(/is-active/);
     });
 
     test('the Colors-tab opacity slider changes --pill-opacity live', async () => {
-      const page = await openPanel(await ctx.open());
-      await page.click('#tab-colors');
-      const slider = page.locator('#opacity-slider');
+      const sp = await openPanel(await ctx.open());
+      await sp.click('#tab-colors');
+      const slider = sp.locator('#opacity-slider');
       await expect(slider).toBeVisible();
       // fill() refuses range inputs, so set the value and fire the input event directly.
+      // Browser: --pill-opacity updates on the same page. Electron: changing it here goes
+      // over config:set-settings -> settings:changed; the settings window re-applies to its
+      // OWN :root (and the pill's too — asserted in the electron spec), so the var updates
+      // on `sp` in both envs.
       await slider.evaluate((el) => { el.value = '0.3'; el.dispatchEvent(new Event('input', { bubbles: true })); });
       await expect
-        .poll(() => page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--pill-opacity'))))
+        .poll(() => sp.evaluate(() => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--pill-opacity'))))
         .toBeCloseTo(0.3, 2);
     });
 
-    test('the live preview mirrors the real clock value', async () => {
-      const page = await openPanel(await ctx.open());
-      await expect(page.locator('#settings-preview')).toBeVisible();
-      const shown = await page.locator(SEL.time).innerText();
-      await expect(page.locator('#sp-time')).toHaveText(shown);
+    test('the live preview shows a ticking clock value', async () => {
+      const page = await ctx.open();
+      const sp = await openPanel(page);
+      await expect(sp.locator('#settings-preview')).toBeVisible();
+      // The preview mirrors the real clock. In browser it's the same (frozen) page, so it
+      // equals the pill exactly; in Electron the settings window runs its own (real) clock,
+      // so we assert a valid HH:MM there rather than a cross-window exact match.
+      if (sp === page) {
+        const shown = await page.locator(SEL.time).innerText();
+        await expect(sp.locator('#sp-time')).toHaveText(shown);
+      } else {
+        await expect(sp.locator('#sp-time')).toHaveText(/^\d{1,2}:\d{2}$/);
+      }
     });
   });
 

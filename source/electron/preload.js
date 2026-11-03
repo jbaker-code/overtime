@@ -38,13 +38,17 @@ contextBridge.exposeInMainWorld('episodeTimer', {
   },
 
   // --- window controls ---
-  // resizeBy drives the custom corner grip; quit is the on-widget × button.
+  // resizeBy drives the custom corner grip — of WHICHEVER window sent it: main
+  // resolves the sender's BrowserWindow, so the same channel resizes the pill OR
+  // the separate settings window (each has its own grip). quit is the legacy ×.
   resizeBy: function (dx, dy) { ipcRenderer.send('window:resize-by', { dx: dx, dy: dy }); },
   quit: function () { ipcRenderer.send('app:quit'); },
 
-  // Tell main when the settings panel opens/closes so it can temporarily grow
-  // the window to a comfortable editing size and restore it on close.
-  setSettingsOpen: function (open) { ipcRenderer.send('window:settings-open', { open: !!open }); },
+  // Ask main to open (or focus) the SEPARATE settings window. Used by the pill's
+  // test/debug hook and anywhere a renderer wants to pop settings; the tray /
+  // right-click "Settings…" calls the same main-side opener directly. (Replaces the
+  // old window:settings-open grow round-trip — the pill no longer grows for settings.)
+  openSettings: function () { ipcRenderer.send('window:open-settings'); },
 
   // Main -> renderer: the tray's Play/Pause/Reset. The renderer owns the
   // stopwatch state, so it runs the transition. cb receives 'play'|'pause'|'reset'.
@@ -53,13 +57,6 @@ contextBridge.exposeInMainWorld('episodeTimer', {
     var listener = function (_event, payload) { cb(payload && payload.action); };
     ipcRenderer.on('timer:command', listener);
     return function () { ipcRenderer.removeListener('timer:command', listener); };
-  },
-
-  // Main -> renderer: the tray's "Settings…" asks the renderer to open the panel.
-  onOpenSettings: function (cb) {
-    var listener = function () { cb(); };
-    ipcRenderer.on('ui:open-settings', listener);
-    return function () { ipcRenderer.removeListener('ui:open-settings', listener); };
   },
 
   // Main -> renderer: the hover fallback. The whole pill is -webkit-app-region: drag, and in

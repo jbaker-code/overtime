@@ -1,13 +1,13 @@
 // PLAN §5.2 "Single-file build correctness": tags replaced in order, no src=/href= left,
 // "</script" escaped, absolute URL -> throws.  Project: unit.
 //
-// Signature (scripts/lib/inline-html.js): inlineHtml(html, { baseDir, readFile, banner }).
+// Signature (source/scripts/lib/inline-html.js): inlineHtml(html, { baseDir, readFile, banner }).
 // `readFile` is REQUIRED (the inliner does no disk access itself), so we inject fs here.
 const { test, expect } = require('@playwright/test');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { inlineHtml } = require('../scripts/lib/inline-html.js');
+const { inlineHtml } = require('../source/scripts/lib/inline-html.js');
 
 const inline = (html, baseDir) => inlineHtml(html, { baseDir, readFile: (p) => fs.readFileSync(p, 'utf8') });
 

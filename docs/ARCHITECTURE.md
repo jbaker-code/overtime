@@ -17,29 +17,32 @@ Electron app, three layers, one bridge:
 
 ```
 ┌──────────────────────── MAIN process (Node) ─────────────────────────┐
-│  main.js                                                             │
-│   • creates the one frameless/transparent/always-on-top window       │
-│   • restores + persists window bounds (clamped on-screen)            │
+│  source/electron/main.js                                             │
+│   • creates the frameless/transparent/always-on-top pill window      │
+│   • creates a SEPARATE settings window on demand (beside the pill)   │
+│   • restores + persists BOTH windows' bounds (clamped on-screen)     │
 │   • runs as a macOS accessory app (no Dock) + a menu-bar tray menu   │
-│   • grows/restores the window when the settings panel opens/closes   │
 │   • owns config.json (the only thing that touches the file)          │
 │   • wires the IPC channels, flushes config on quit                   │
-│   src/main/config.js        — atomic JSON read/write, corrupt-safe   │
-│   src/main/window-state.js  — restore/clamp + track bounds           │
+│   source/electron/config.js        — atomic JSON read/write, corrupt-safe   │
+│   source/electron/window-state.js  — restore/clamp + track bounds (per key) │
 └───────────────┬──────────────────────────────────────────────────────┘
                 │  IPC (contextBridge, the ONLY door)
-┌───────────────┴──────── PRELOAD (preload.js) ────────────────────────┐
+┌───────────────┴──────── PRELOAD (source/electron/preload.js) ────────┐
 │  exposes exactly one object: window.episodeTimer                      │
 │  contextIsolation: ON   sandbox: ON   nodeIntegration: OFF            │
 └───────────────┬──────────────────────────────────────────────────────┘
                 │  window.episodeTimer.*
 ┌───────────────┴──────── RENDERER (the web page) ─────────────────────┐
-│  src/renderer/index.html + styles.css                                 │
+│  source/app/renderer/index.html + styles.css   (the PILL)             │
 │   app.js            — UI wiring, tick scheduler, buttons, hover, grip │
 │   bridge.js         — picks Electron vs. browser, same async API      │
 │   settings-apply.js — the one place settings → DOM/CSS                │
 │   settings-panel.js — the tabbed click-to-select ⚙ panel (v2)        │
-│  src/shared/*  (format.js, stopwatch.js, config-schema.js)            │
+│  source/app/renderer/settings.html + settings-window.js  (Electron settings│
+│   window: reuses settings-panel/-apply + shared modules to fill its   │
+│   own window; browser build keeps the in-page panel instead)          │
+│  source/app/shared/*  (format.js, stopwatch.js, config-schema.js)     │
 │   pure, UMD-wrapped, no DOM/Node — shared by main, renderer, tests    │
 └───────────────────────────────────────────────────────────────────────┘
 ```
@@ -49,7 +52,7 @@ in a tab. There's no main process and no preload, so `bridge.js` falls back to a
 `localStorage`-backed implementation of the same async API. Same renderer code, two
 environments.
 
-The stopwatch **state lives in the renderer** (`src/shared/stopwatch.js`). Main only
+The stopwatch **state lives in the renderer** (`source/app/shared/stopwatch.js`). Main only
 *persists* what the renderer hands it. That keeps main tiny and lets the identical
 state machine run in browser mode.
 
@@ -58,41 +61,42 @@ state machine run in browser mode.
 ## File map
 
 ```
-main.js                      Electron main entry (package.json "main").
-preload.js                   The one contextBridge → window.episodeTimer.
-
-src/
-  main/
+source/
+  electron/
+    main.js                  Electron main entry (package.json "main").
+    preload.js               The one contextBridge → window.episodeTimer.
     config.js                config.json: load/get/set/update, debounced atomic write,
                              corrupt-file quarantine, flushSync() for before-quit.
     window-state.js          restoreBounds() (clamp to a connected display) +
                              trackBounds() (debounced moved/resized → config.window).
-  shared/                    Pure JS, UMD-wrapped (no DOM, no Node).
-    format.js                formatClock(date,{hour12,showSeconds}) + formatElapsed(ms).
-    stopwatch.js             the state machine: play/pause/stop/reset/elapsedMs,
+    build/                   electron-builder buildResources (icons, trayTemplate.png).
+  app/
+    shared/                  Pure JS, UMD-wrapped (no DOM, no Node).
+      format.js              formatClock(date,{hour12,showSeconds}) + formatElapsed(ms).
+      stopwatch.js           the state machine: play/pause/stop/reset/elapsedMs,
                              fromPersisted (restore-as-paused), toPersisted.
-    config-schema.js         DEFAULT_CONFIG, SETTINGS_KEYS, the option catalogs
+      config-schema.js       DEFAULT_CONFIG, SETTINGS_KEYS, the option catalogs
                              (LAYOUTS/FONTS/BG_COLORS/TEXT_COLORS), normalizeConfig(),
                              normalizeSettingsPatch(), MIN_WIDTH/MIN_HEIGHT.
-  renderer/
-    index.html               the one page (relative script/link refs, fixed order).
-    styles.css               transparent body, pill, vmin sizing, hover, data-layout
+    renderer/
+      index.html             the one page (relative script/link refs, fixed order).
+      styles.css             transparent body, pill, vmin sizing, hover, data-layout
                              arrangements, the settings-panel styling.
-    bridge.js                Electron vs. browser; exposes env + the async API.
-    settings-apply.js        applySettings(): settings object → CSS vars + data-layout
+      bridge.js              Electron vs. browser; exposes env + the async API.
+      settings-apply.js      applySettings(): settings object → CSS vars + data-layout
                              (+ derived data-theme); also fontFamilyFor + getClockOptions.
-    settings-panel.js        the tabbed ⚙ panel: builds tiles from the catalogs,
+      settings-panel.js      the tabbed ⚙ panel: builds tiles from the catalogs,
                              calls back onSelect(key, value); no direct persistence.
-    app.js                   DOM refs, second-aligned tick, buttons, hover, grip,
+      app.js                 DOM refs, second-aligned tick, buttons, hover, grip,
                              panel wiring, persistence pushes, window.__episodeTimer hook.
+  scripts/                   Build pipeline (plain Node, no deps). See "Build pipeline".
 
-scripts/                     Build pipeline (plain Node, no deps). See "Build pipeline".
-tests/                       Playwright suite + helpers. See "Testing".
+tests/                       Playwright suite + helpers (incl. playwright.config.js). See "Testing".
 ```
 
 ---
 
-## Window configuration (main.js), flag by flag
+## Window configuration (source/electron/main.js), flag by flag
 
 ```js
 new BrowserWindow({
@@ -137,7 +141,7 @@ Then, after creation:
 
 **Deliberately absent: `win.setContentProtection(true)`.** OBS (and any recorder)
 *must* be able to capture the widget — that's the entire point. There's a comment in
-`main.js` marking it, and a unit test greps the file to make sure it never creeps
+`source/electron/main.js` marking it, and a unit test greps the file to make sure it never creeps
 back in.
 
 **Dev/test env knobs** read by main: `EPISODE_TIMER_USER_DATA` (point `userData` at a
@@ -150,7 +154,7 @@ opaque while it's open — a documented Electron limitation).
 
 Because the Dock icon is hidden, `createTray()` gives the app a presence in the
 **menu-bar tray** (macOS; a notification-area icon on Windows/Linux). The tray icon is
-a monochrome `*Template` image from `build/trayTemplate.png` (`+@2x`), which macOS
+a monochrome `*Template` image from `source/electron/build/trayTemplate.png` (`+@2x`), which macOS
 auto-inverts for light/dark menu bars; if that asset is missing it falls back to an
 empty image plus a short `⏱` text title so the entry is never invisible. A tray failure
 is swallowed — it never takes the app down.
@@ -168,20 +172,38 @@ bound to a left-click on the icon; **Float on top** is a checkbox that writes
 effect + persistence + the renderer broadcast + the checkmark all stay in sync
 (`updateTrayMenu` rebuilds the menu after any settings change).
 
-### Settings-mode window grow
+### The separate settings window (Electron)
 
-When the renderer opens the settings panel it sends `window:settings-open {open:true}`;
-main calls `growForSettings()` — remember the current (real) bounds, grow to ~720×620
-(only if currently smaller), clamped onto the display. On `{open:false}`,
-`restoreFromSettings()` puts the exact saved bounds back. A `settingsGrown` flag gates
-`trackBounds`'s `shouldSkipSave`, so **the grown size is never persisted** — only the
-user's real widget size ever reaches disk.
+In Electron, **Settings is its own window**, not an in-pill overlay. Choosing
+"Settings…" (tray / right-click) calls `openSettingsWindow()` in main: focus the window
+if it's already up, otherwise `createSettingsWindow()` — a second frameless/transparent
+`BrowserWindow` loading `source/app/renderer/settings.html`, which reuses the same tabbed panel
+(`settings-panel.js`), applier (`settings-apply.js`) and shared modules to fill the
+window. The pill keeps its small always-on-top self over the wallpaper; edits broadcast
+back so the **real clock updates live** (see `settings:changed` below). This REPLACES the
+old "grow the pill to fit an in-page panel" hack — `growForSettings`/`restoreFromSettings`
+and `window:settings-open` are gone.
+
+The settings window:
+- persists its position AND size under its own config key `settingsWindow`
+  (`trackBounds(settingsWin, config, { key: 'settingsWindow' })`), clamped on-screen like
+  the pill;
+- opens at a **default ~1262×975** when unset, run through `clampBounds` so it fits the
+  display work area (shrunk to the largest that fits if the screen is smaller), positioned
+  beside the pill the first time;
+- has a bottom-right **resize grip** (`#settings-grip`) wired to `window:resize-by` (main
+  resizes whichever window SENT the IPC);
+- closes via its own `×` (closing it leaves the pill running).
+
+The **browser / single-file build** is unaffected: it has no second window, so it keeps
+the in-page `#settings-panel` overlay exactly as before. The split is on `bridge.env`
+(renderer) / `BrowserWindow.fromWebContents(event.sender)` (main).
 
 ---
 
 ## IPC contract
 
-`preload.js` exposes exactly one object, `window.episodeTimer`, carrying
+`source/electron/preload.js` exposes exactly one object, `window.episodeTimer`, carrying
 `isElectron: true` and `platform`. Everything it does maps to one of these frozen
 channels:
 
@@ -190,13 +212,12 @@ channels:
 | `timer:get` | renderer → main (invoke) | — | returns `config.get('timer')` (already normalized; `null` only if never saved) |
 | `timer:push` | renderer → main (send) | persisted timer | `stopwatch.fromPersisted` (validate + clamp) → `config.set('timer', …)` (debounced atomic write) |
 | `config:get-settings` | renderer → main (invoke) | — | returns the full `settings` object (defaults merged) |
-| `config:set-settings` | renderer → main (invoke) | `Partial<Settings>` | `normalizeSettingsPatch` → merge → persist → apply main-side effects → broadcast `settings:changed` → return full settings |
-| `settings:changed` | main → renderer (send) | full `Settings` | renderer calls `applySettings` |
-| `window:resize-by` | renderer → main (send) | `{ dx, dy }` | **free** resize from the grip: `dx` changes width, `dy` changes height independently, each clamped to its own min (no aspect lock); rounded to integers + finite-guarded before `setSize` |
-| `window:settings-open` | renderer → main (send) | `{ open }` | `open:true` → `growForSettings()` (grow to ~720×620, remember real bounds); `open:false` → `restoreFromSettings()`. Grown size never persisted |
+| `config:set-settings` | renderer → main (invoke) | `Partial<Settings>` | `normalizeSettingsPatch` → merge → persist → apply main-side effects → **broadcast `settings:changed` to BOTH windows** → return full settings |
+| `settings:changed` | main → BOTH renderers (send) | full `Settings` | each renderer calls `applySettings` — the pill updates the real clock live, the settings window updates its preview |
+| `window:resize-by` | renderer → main (send) | `{ dx, dy }` | **free** resize of the SENDER's window (`BrowserWindow.fromWebContents`): `dx`/`dy` change width/height independently, each clamped to that window's own min (pill vs. settings); rounded to integers + finite-guarded before `setSize` |
+| `window:open-settings` | renderer → main (send) | — | open/focus the SEPARATE settings window (`openSettingsWindow()`); used by the pill's debug hook (the tray/right-click "Settings…" calls it directly) |
 | `app:quit` | renderer → main (send) | — | `app.quit()` |
 | `timer:command` | main → renderer (send) | `{ action }` | tray Play/Pause/Reset — the renderer (state owner) runs the transition; `action` is `'play'｜'pause'｜'reset'` |
-| `ui:open-settings` | main → renderer (send) | — | tray "Settings…" asks the renderer to open the panel (which then fires `window:settings-open`) |
 
 The preload API surface (`window.episodeTimer`):
 `isElectron`, `platform`, `getTimer()`, `pushTimer(t)`, `getSettings()`,
@@ -221,7 +242,7 @@ stamped onto `#app[data-env]`.
 
 ## Stopwatch state machine
 
-State shape (`src/shared/stopwatch.js`):
+State shape (`source/app/shared/stopwatch.js`):
 
 ```js
 { status: 'stopped' | 'running' | 'paused',
@@ -279,14 +300,14 @@ ever preferred, it's a one-line swap in `stopwatch.js` to
 ## Config & persistence
 
 One JSON file, `config.json`, in Electron's `userData` dir, owned entirely by
-`src/main/config.js`:
+`source/electron/config.js`:
 
 - macOS: `~/Library/Application Support/Overtime/config.json`
 - Windows: `%APPDATA%\Overtime\config.json`
 - Tests/dev override the folder with `EPISODE_TIMER_USER_DATA=<dir>`.
 - Browser mode keeps the same object in `localStorage['episode-timer.config.v1']`.
 
-The shape (frozen in `src/shared/config-schema.js`, the single source of truth):
+The shape (frozen in `source/app/shared/config-schema.js`, the single source of truth):
 
 ```jsonc
 {
@@ -306,13 +327,18 @@ The shape (frozen in `src/shared/config-schema.js`, the single source of truth):
 }
 ```
 
-The eight `SETTINGS_KEYS` are `layout, font, bgColor, textColor, opacity, showSeconds,
-hour12, alwaysOnTop`. `layout`, `font`, `bgColor`, and `textColor` are **enums** whose
-allowed values live in the exported catalogs `LAYOUTS` (10 arrangements), `FONTS` (10
-system/web-safe keywords), `BG_COLORS` (10 hex), and `TEXT_COLORS` (10 hex) — these are
-the single source of truth the panel renders tiles from and the schema validates
-against, so the two can't drift. (There is **no `theme` setting** — see the rendering
-section for how `data-theme` is derived.)
+The sixteen `SETTINGS_KEYS` are `layout, font, customFont, useCustomFont, bgColor,
+textColor, customBgColor, customTextColor, opacity, textOpacity, cutout, showSeconds,
+hour12, alwaysOnTop, showClock, showStopwatch`. `layout` and `font` are **enums** whose
+allowed values live in the exported catalogs `LAYOUTS` (10 arrangements) and `FONTS` (9
+system/web-safe keywords). `bgColor`/`textColor` hold the **active** color — any valid
+`#rrggbb` (a preset OR a hex mixed in the color picker), validated by shape, not enum
+membership; `BG_COLORS` (9 hex) and `TEXT_COLORS` (9 hex) are just the quick-pick preset
+swatches. `customBgColor`/`customTextColor` remember the last picker color, and
+`customFont` + `useCustomFont` remember/toggle an arbitrary installed family. These
+catalogs are the single source of truth the panel renders tiles from and the schema
+validates against, so the two can't drift. (There is **no `theme` setting** — see the
+rendering section for how `data-theme` is derived.)
 
 `normalizeConfig(raw)` **always returns a complete, valid config** — deep-merge over
 defaults, per-field validation (enums via `pickEnum` against the catalogs, opacity
@@ -334,7 +360,7 @@ or a valid-JSON-but-wrong-type file (an array, a string, `null`) → defaults **
 the bad file is renamed to `config.json.corrupt-<timestamp>` so nothing is silently
 destroyed. One log line either way.
 
-**Off-screen clamp** (`src/main/window-state.js`, `restoreBounds`): size is always
+**Off-screen clamp** (`source/electron/window-state.js`, `restoreBounds`): size is always
 restored (clamped to `MIN_WIDTH`/`MIN_HEIGHT`). Position is kept only if the saved
 rect still overlaps a *connected* display's work area by ≥ 50% (via
 `screen.getDisplayMatching`); otherwise it slides fully back onto that display, and if
@@ -348,19 +374,26 @@ while running; main debounces disk I/O. Worst-case data loss on a hard kill is �
 
 ### The settings panel (v2)
 
-The settings UI shipped — it's `src/renderer/settings-panel.js`, a tabbed
-click-to-select overlay. It's not a separate window: it's DOM built inside `#app` and
-revealed with `#app[data-settings="open"]`, so it works identically in Electron and in
-the browser single-file build.
+The settings UI is `source/app/renderer/settings-panel.js`, a tabbed click-to-select panel built
+inside an `#app` host and revealed with `#app[data-settings="open"]`. The SAME panel code
+runs in two homes, chosen by `bridge.env`:
+
+- **browser (single-file):** built inside the pill's own `#app` (`app.js → setupPanel()`),
+  an in-page overlay — there is no second window in a tab. Unchanged.
+- **electron:** NOT in the pill. It lives in a **separate window** (`settings.html` +
+  `settings-window.js`) that builds the identical panel to fill its own `#app`. The pill
+  builds no panel (`setupPanel` is skipped when `bridge.env === 'electron'`).
 
 How it's wired:
 
 ```
-⚙ gear click → panel.toggle()
- tile click  → onSelect(key, value)          (app.js)
+"Settings…" (tray/right-click, electron) → openSettingsWindow()  (main)
+⚙ gear click (browser)                   → panel.open()          (in-page)
+ tile click  → onSelect(key, value)          (app.js / settings-window.js)
              → bridge.setSettings({ [key]: value })
-                  Electron: config:set-settings  → main validates + merges + persists
+                  Electron: config:set-settings → main validates + merges + persists
                             + applies main-side effects + broadcasts settings:changed
+                            to BOTH windows (pill clock live + settings preview)
                   browser:  writes the localStorage blob through normalizeConfig
              → the normalized full settings come back → applySettings(settings)
              → panel.reflect(settings)  re-highlights the selected tiles
@@ -377,12 +410,12 @@ The panel:
 - shows a ~3× live preview of the pill at the top, sitting on a checkerboard backdrop
   (`#settings-preview` inside `#settings-preview-backdrop`) so lowering the opacity
   visibly reveals the "desktop" through the translucent pill;
-- when it opens/closes it calls `bridge.setSettingsOpen(open)` (→ `window:settings-open`),
-  which is what makes main grow the window to ~720×620 and restore the real size on
-  close (the grown size is never persisted);
-- never persists anything itself — it only calls back `onSelect(key, value)`. app.js
-  sends a one-key patch down the normal settings path and applies the result. One
-  source of truth, no drift.
+- in Electron it fills its own window (which main sizes/persists via the `settingsWindow`
+  bounds — see "The separate settings window"); in the browser it's an in-page overlay and
+  `onToggle` just re-fits the preview box (there's no OS window to grow);
+- never persists anything itself — it only calls back `onSelect(key, value)`. The host
+  (app.js in browser, settings-window.js in Electron) sends a one-key patch down the
+  normal settings path and applies the result. One source of truth, no drift.
 
 `hour12` and `showSeconds` have no tiles yet — they're still edited in `config.json` by
 hand. `alwaysOnTop` has no panel tile either, but it *is* toggleable at runtime via the
@@ -463,7 +496,7 @@ Plain Node, no runtime deps, electron-builder's **programmatic API**. Flow:
 electron-builder (dir target) → scratch → stage (+ README.txt) → zip → dist/
 ```
 
-- `scripts/lib/paths.js` — every path and artifact name in one place. `ROOT` is the repo
+- `source/scripts/lib/paths.js` — every path and artifact name in one place. `ROOT` is the repo
   root. Each run gets a dated+random `SLUG` (`YYYYMMDD-HHMMSS-xxxxx`; `build-all` makes one
   and shares it with its children via `EPISODE_TIMER_BUILD_SLUG`), so the artifacts land in a
   per-build folder `BUILD_DIR = ROOT/tmp/overtime-build-<slug>/` with `DIST = BUILD_DIR/dist`.
@@ -473,14 +506,14 @@ electron-builder (dir target) → scratch → stage (+ README.txt) → zip → d
   unpacked `.app` is full of symlinks a shared folder can't store. A `safeRemove` guard
   refuses to delete anything outside `SCRATCH` or a build folder under `ROOT/tmp/`;
   `listBuildDirs()` enumerates those build folders for `clean`.
-- electron-builder config (`scripts/lib/electron-builder.config.js`): `dir` targets
+- electron-builder config (`source/scripts/lib/electron-builder.config.js`): `dir` targets
   only, `asar: true`, `npmRebuild: false`. macOS `identity: null` (unsigned on purpose),
   `extendInfo.LSUIElement: true` (accessory app, pairs with `app.dock.hide`). Windows
   `signAndEditExecutable: false` so the cross-build never reaches for `rcedit`/Wine.
-- `scripts/lib/stage.js` — builds `<SCRATCH>/stage/<name>/` holding the app + the usage
+- `source/scripts/lib/stage.js` — builds `<SCRATCH>/stage/<name>/` holding the app + the usage
   doc renamed **`README.txt`** (+ `LICENSE` if present), then zips it so unzipping
   yields one tidy folder.
-- `scripts/lib/zip.js` — `ditto` on macOS (preserves `.app` symlinks/exec bits), `tar`
+- `source/scripts/lib/zip.js` — `ditto` on macOS (preserves `.app` symlinks/exec bits), `tar`
   elsewhere; also asserts a known path exists inside the finished zip.
 
 Per target:
@@ -493,7 +526,7 @@ Per target:
   `dist/windows/`. No NSIS/portable. Built on macOS, **not run** — needs a smoke test
   on real Windows.
 - **single** (`build-single-file.js`): inlines `index.html` + CSS + JS into one file
-  via the pure, unit-tested `scripts/lib/inline-html.js`. Swaps each relative
+  via the pure, unit-tested `source/scripts/lib/inline-html.js`. Swaps each relative
   `<link>`/`<script>` for its contents in document order, escapes `</script`, prepends
   a banner, and **fails loudly on any absolute/`http` reference**. `--out <path>` writes
   elsewhere (the test suite uses this so it never dirties `dist/`).
@@ -519,7 +552,7 @@ The inliner contract the renderer must honor: `index.html` references assets onl
 
 ## Testing
 
-`npm test` = `playwright test`, three projects (see `playwright.config.js`):
+`npm test` = `playwright test`, three projects (see `tests/playwright.config.js`):
 
 - **unit** — pure Node; `require()`s the shared modules and the inliner directly. The
   stopwatch transition table, config schema tolerance, formatters, the inliner, and

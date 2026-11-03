@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Overtime Settings</title>
+
+  <!--
+    The SEPARATE settings window (Electron only). It hosts the SAME tabbed panel,
+    live preview and system-font browser the pill used to show in-page — reusing
+    settings-panel.js / settings-apply.js / the shared modules verbatim. The pill's
+    in-page #settings-panel overlay still exists for the BROWSER / single-file build
+    (index.html); this window is the Electron equivalent, beside the pill, so the
+    real clock stays visible over the wallpaper while you edit (changes broadcast
+    back to the pill live over the existing config:set-settings -> settings:changed
+    path). The single-file inliner never touches this file — it only inlines
+    index.html — so the browser build is unaffected.
+
+    Same classic-script load order as index.html (no ES modules):
+      format.js, stopwatch.js -> config-schema.js -> bridge.js
+      -> settings-apply.js -> settings-panel.js -> settings-window.js
+  -->
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <!--
+    #app is the panel host, exactly as in the pill: settings-panel.js appends
+    #settings-panel into it, the live preview is a descendant (so its colors ride
+    the same :root vars and its arrangement follows #app[data-layout]), and the
+    font browser toggles #app[data-fontbrowser]. data-settings starts "open" so the
+    panel shows immediately (settings-window.js also calls panel.open()); the rest
+    of the data-* attributes are set by settings-apply.js once current settings load.
+  -->
+  <div id="app" data-env="electron" data-status="stopped" data-hover="false" data-theme="dark" data-settings="open" data-layout="stack">
+    <!-- Bottom-right resize grip (frameless rounded corners are hard to grab). Styled
+         like the pill's grip; always visible here since this is an editing window.
+         settings-panel.js appends #settings-panel AFTER this node, so the grip carries
+         a higher z-index to stay on top of the panel. -->
+    <div id="settings-grip" aria-hidden="true"></div>
+  </div>
+
+  <!-- Shared modules first (dependency order), then the settings-window glue. -->
+  <script src="../shared/format.js"></script>
+  <script src="../shared/stopwatch.js"></script>
+  <script src="../shared/config-schema.js"></script>
+  <script src="./bridge.js"></script>
+  <script src="./settings-apply.js"></script>
+  <script src="./settings-panel.js"></script>
+  <script src="./settings-window.js"></script>
+</body>
+</html>

@@ -182,8 +182,9 @@ dist/
 └── source/         overtime-source-v1.0.0.zip
 ```
 
-The curated, published copies of these zips live in the committed
-[`releases/`](../releases/) folder — that's what the README's download links point at.
+The curated, published copies of these zips live in the companion
+[`overtime-releases`](https://github.com/jbaker-code/overtime-releases) repo — that's
+what the README's download links point at.
 
 Notes that matter:
 
@@ -281,11 +282,11 @@ frameless window, no drag-to-move, and the **×** and resize grip are hidden.
 
 Multiple/named timers, sound/notifications, cloud sync, auto-start-on-boot. It's one
 small, sharp widget on purpose. (The look & feel *is* customizable via the ⚙ settings
-panel — see [`../ARCHITECTURE.md`](../ARCHITECTURE.md) for how to add a new look option
+panel — see [`ARCHITECTURE.md`](./ARCHITECTURE.md) for how to add a new look option
 to the catalog.)
 
 ---
 
-See [`../ARCHITECTURE.md`](../ARCHITECTURE.md) for how it's wired. The original product
+See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for how it's wired. The original product
 spec and implementation plan are kept for the curious in
 [`dev/PRD.md`](dev/PRD.md) and [`dev/PLAN.md`](dev/PLAN.md).
